@@ -1,0 +1,24 @@
+.DS_Store
+._*
+**/._*
+.env
+.env.local
+.pytest_cache/
+**/.pytest_cache/
+**/__pycache__/
+**/*.pyc
+.next/
+node_modules/
+web/.next/
+web/node_modules/
+backend/.venv/
+.cache/
+artifacts/
+
+# Local or copyrighted media and generated inference artifacts
+视频素材/
+smoke/*.mp4
+smoke/*.png
+smoke/results/
+smoke/a40-*/
+design-qa*

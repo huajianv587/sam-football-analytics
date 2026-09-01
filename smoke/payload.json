@@ -1,0 +1,22 @@
+{
+  "project_id": "00000000-0000-0000-0000-000000000001",
+  "source_path": "smoke/source.mp4",
+  "prompts": [
+    {"object_id": 1, "box": [0.1172, 0.3333, 0.1922, 0.6528]},
+    {"object_id": 2, "box": [0.7266, 0.3194, 0.8016, 0.6389]}
+  ],
+  "calibration": [
+    {"video": [0, 0], "pitch": [0, 0]},
+    {"video": [1, 0], "pitch": [105, 0]},
+    {"video": [1, 1], "pitch": [105, 68]},
+    {"video": [0, 1], "pitch": [0, 68]}
+  ],
+  "team_colors": {
+    "team_a": [220, 38, 56],
+    "team_b": [120, 200, 235],
+    "referee": [30, 32, 36]
+  },
+  "roster": [],
+  "team_a": "Spain",
+  "team_b": "Argentina"
+}
