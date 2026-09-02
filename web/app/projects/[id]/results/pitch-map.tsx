@@ -13,10 +13,11 @@ export function PitchMap({ tracks, selectedId }: { tracks: Track[]; selectedId: 
     ctx.fillStyle = "#174c36"; ctx.fillRect(0, 0, canvas.width, canvas.height);
     const visible = selectedId === null ? tracks : tracks.filter((track) => track.object_id === selectedId);
     visible.forEach((track, trackIndex) => {
-      track.trajectory.filter((point, index) => index % 3 === 0 && point.pitch !== null).forEach((point) => {
-        if (!point.pitch) return;
-        const x = (point.pitch[0] / 105) * canvas.width;
-        const y = (point.pitch[1] / 68) * canvas.height;
+      track.trajectory.filter((point, index) => index % 3 === 0 && ("smoothed_pitch" in point ? point.smoothed_pitch : point.pitch) !== null).forEach((point) => {
+        const pitch = "smoothed_pitch" in point ? point.smoothed_pitch : point.pitch;
+        if (!pitch) return;
+        const x = (pitch[0] / 105) * canvas.width;
+        const y = (pitch[1] / 68) * canvas.height;
         const gradient = ctx.createRadialGradient(x, y, 0, x, y, 28);
         gradient.addColorStop(0, trackIndex % 2 ? "rgba(117,216,255,.32)" : "rgba(184,255,98,.35)");
         gradient.addColorStop(1, "rgba(184,255,98,0)");

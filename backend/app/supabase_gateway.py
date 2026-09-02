@@ -85,6 +85,9 @@ class SupabaseGateway:
     def download_video(self, object_path: str, destination: Path) -> None:
         destination.write_bytes(self.client.storage.from_("videos").download(object_path))
 
+    def download_artifact(self, object_path: str, destination: Path) -> None:
+        destination.write_bytes(self.client.storage.from_("artifacts").download(object_path))
+
     def upload_video(self, object_path: str, content: bytes) -> None:
         self.client.storage.from_("videos").upload(
             object_path,
@@ -98,6 +101,28 @@ class SupabaseGateway:
             source.read_bytes(),
             {"content-type": content_type, "upsert": "true"},
         )
+
+    def signed_artifact(self, object_path: str) -> str:
+        return self.client.storage.from_("artifacts").create_signed_url(
+            object_path, 3600
+        )["signedURL"]
+
+    def track(self, project_id: str, object_id: int) -> dict[str, Any]:
+        rows = self.client.table("tracks").select("*").eq(
+            "project_id", project_id
+        ).eq("object_id", object_id).limit(1).execute().data
+        if not rows:
+            raise LookupError("track not found")
+        return rows[0]
+
+    def update_track_metrics(
+        self, project_id: str, object_id: int, values: dict[str, Any]
+    ) -> dict[str, Any]:
+        track = self.track(project_id, object_id)
+        metrics = {**(track.get("metrics") or {}), **values}
+        return self.client.table("tracks").update({"metrics": metrics}).eq(
+            "project_id", project_id
+        ).eq("object_id", object_id).execute().data[0]
 
     def results_bundle(self, project_id: str, owner_id: str) -> dict[str, Any]:
         project = self.project(project_id, owner_id)

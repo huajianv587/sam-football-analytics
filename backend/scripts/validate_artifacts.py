@@ -82,6 +82,7 @@ def continuity_report(tracks: list[dict[str, Any]]) -> dict[str, Any]:
 
 def validate(directory: Path) -> dict[str, Any]:
     tracks = load_json(directory / "tracks.json")
+    metrics = load_json(directory / "metrics.json")
     calibration = load_json(directory / "calibration.json.gz")
     mask_paths = sorted(
         path for path in (directory / "masks").glob("*.json.gz")
@@ -135,11 +136,22 @@ def validate(directory: Path) -> dict[str, Any]:
     identified = 0
     metric_tracks = 0
     visible_per_frame: dict[int, int] = {}
+    lifetimes: list[int] = []
+    reported_speeds: list[float] = []
+    mask_coverage: list[float] = []
     for track in tracks:
         roles[track["role"]] = roles.get(track["role"], 0) + 1
         teams[track["team"]] = teams.get(track["team"], 0) + 1
         identified += int(bool(track.get("player_name")))
         metric_tracks += int(any(point.get("speed_kmh") is not None for point in track["trajectory"]))
+        lifetimes.append(int(track["last_frame"]) - int(track["first_frame"]) + 1)
+        if track.get("metrics", {}).get("mask_coverage_ratio") is not None:
+            mask_coverage.append(float(track["metrics"]["mask_coverage_ratio"]))
+        reported_speeds.extend(
+            float(point["speed_kmh"])
+            for point in track["trajectory"]
+            if point.get("speed_kmh") is not None
+        )
         for point in track.get("detections") or track["trajectory"]:
             frame = int(point["frame"])
             visible_per_frame[frame] = visible_per_frame.get(frame, 0) + 1
@@ -181,6 +193,21 @@ def validate(directory: Path) -> dict[str, Any]:
             "teams": teams,
             "identified": identified,
             "metric_speed_available": metric_tracks,
+            "lifetime_frames": {
+                "min": min(lifetimes, default=0),
+                "median": percentile(lifetimes, 50),
+                "max": max(lifetimes, default=0),
+                "median_seconds": round(float(np.median(lifetimes)) / 15, 2)
+                if lifetimes else 0,
+            },
+            "speed_outlier_rate_over_45_kmh": round(
+                sum(speed > 45 for speed in reported_speeds) / len(reported_speeds), 4
+            ) if reported_speeds else 0,
+            "mask_coverage_ratio": {
+                "min": min(mask_coverage, default=0),
+                "median": percentile(mask_coverage, 50),
+                "mean": round(float(np.mean(mask_coverage)), 4) if mask_coverage else 0,
+            },
             "visible_per_frame": {
                 "min": min(visible_per_frame.values(), default=0),
                 "median": percentile(list(visible_per_frame.values()), 50),
@@ -188,6 +215,23 @@ def validate(directory: Path) -> dict[str, Any]:
             },
         },
         "track_continuity": continuity_report(tracks),
+        "compute_profile": {
+            "elapsed_seconds": metrics.get("elapsed_seconds"),
+            "sam_model_tier": metrics.get("sam_model_tier"),
+            "sam_window_frames": metrics.get("sam_window_frames"),
+            "sam_window_overlap": metrics.get("sam_window_overlap"),
+            "sam_object_batch": metrics.get("sam_object_batch"),
+            "detector_tracker_fps": metrics.get("detector_tracker_fps"),
+            "calibration_fps": metrics.get("calibration_fps"),
+            "active_object_frames": metrics.get("active_object_frames"),
+            "dense_object_frames": metrics.get("dense_object_frames"),
+            "object_frame_reduction": round(
+                1 - float(metrics.get("active_object_frames") or 0)
+                / max(1, float(metrics.get("dense_object_frames") or 0)),
+                4,
+            ),
+            "field_association": metrics.get("field_association"),
+        },
         "videos": {
             name: video_report(directory / name)
             for name in ("normalized.mp4", "foreground.mp4")

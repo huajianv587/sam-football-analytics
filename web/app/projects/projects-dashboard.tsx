@@ -13,9 +13,10 @@ const labels = { draft: "SETUP", queued: "QUEUED", running: "A40 PROCESSING", co
 export function ProjectsDashboard({ configured, userId, initialProjects }: { configured: boolean; userId: string; initialProjects: Project[] }) {
   const router = useRouter();
   const [showForm, setShowForm] = useState(false);
-  const [title, setTitle] = useState("2026 World Cup Final Analysis");
-  const [teamA, setTeamA] = useState("Spain");
-  const [teamB, setTeamB] = useState("Argentina");
+  const [title, setTitle] = useState("Automatic Football Analysis");
+  const [matchLabel, setMatchLabel] = useState("Unspecified Match");
+  const [teamA, setTeamA] = useState("Team A");
+  const [teamB, setTeamB] = useState("Team B");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -25,7 +26,7 @@ export function ProjectsDashboard({ configured, userId, initialProjects }: { con
     const { data, error: insertError } = await createClient().from("projects").insert({
       owner_id: userId,
       title,
-      match_label: "2026 FIFA World Cup Final",
+      match_label: matchLabel,
       team_a: teamA,
       team_b: teamB,
       analysis_mode: "auto_all",
@@ -60,7 +61,7 @@ export function ProjectsDashboard({ configured, userId, initialProjects }: { con
             <div className="panel-title"><h2>New analysis</h2><span>CONTINUOUS SHOT · 60 SEC MAX</span></div>
             <div className="calibration-grid">
               <div className="field"><label>PROJECT NAME</label><input className="input" value={title} onChange={(event) => setTitle(event.target.value)} required /></div>
-              <div className="field"><label>MATCH</label><input className="input" value="2026 FIFA World Cup Final" disabled /></div>
+              <div className="field"><label>MATCH</label><input className="input" value={matchLabel} onChange={(event) => setMatchLabel(event.target.value)} required /></div>
               <div className="field"><label>TEAM A</label><input className="input" value={teamA} onChange={(event) => setTeamA(event.target.value)} required /></div>
               <div className="field"><label>TEAM B</label><input className="input" value={teamB} onChange={(event) => setTeamB(event.target.value)} required /></div>
             </div>

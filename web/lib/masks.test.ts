@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decodeRle, decodeRleCrop, rleContains, smallestTrackAt } from "./masks";
+import { decodeRle, decodeRleCrop, nearestFrameValue, projectMaskCrop, rleContains, smallestTrackAt } from "./masks";
 import type { Track } from "./types";
 
 describe("decodeRle", () => {
@@ -67,5 +67,19 @@ describe("smallestTrackAt", () => {
       trajectory: [],
     } as unknown as Track;
     expect(smallestTrackAt([track], 12, 20, 30)?.object_id).toBe(7);
+  });
+
+  it("uses the nearest verified mask frame when the current frame is gated", () => {
+    const values = new Map([[4, "before"], [10, "after"]]);
+    expect(nearestFrameValue(values, 7)).toEqual({ frame: 4, value: "before", interpolated: true });
+    expect(nearestFrameValue(values, 10)).toEqual({ frame: 10, value: "after", interpolated: false });
+  });
+
+  it("moves and scales a verified mask crop with the current detection box", () => {
+    expect(projectMaskCrop(
+      { x: 12, y: 24, width: 6, height: 12 },
+      [10, 20, 20, 40],
+      [30, 50, 50, 90],
+    )).toEqual({ x: 34, y: 58, width: 12, height: 24 });
   });
 });

@@ -41,6 +41,43 @@ def homography_from_parameters(parameters: Any) -> tuple[list[float] | None, flo
                 matrix = np.asarray(parameters[key], dtype=float)
                 if matrix.size == 9:
                     return matrix.reshape(-1).tolist(), float(parameters.get("confidence", 1))
+        required = {
+            "x_focal_length",
+            "y_focal_length",
+            "principal_point",
+            "position_meters",
+            "rotation_matrix",
+        }
+        if required.issubset(parameters):
+            focal_x = float(parameters["x_focal_length"])
+            focal_y = float(parameters["y_focal_length"])
+            principal_x, principal_y = parameters["principal_point"]
+            position = np.asarray(parameters["position_meters"], dtype=float)
+            rotation = np.asarray(parameters["rotation_matrix"], dtype=float)
+            translation = np.eye(4, dtype=float)[:3]
+            translation[:, -1] = -position
+            intrinsics = np.asarray(
+                [
+                    [focal_x, 0, float(principal_x)],
+                    [0, focal_y, float(principal_y)],
+                    [0, 0, 1],
+                ],
+                dtype=float,
+            )
+            world_to_image = intrinsics @ (rotation @ translation)
+            ground_to_image = world_to_image[:, [0, 1, 3]]
+            try:
+                image_to_centered_pitch = np.linalg.inv(ground_to_image)
+            except np.linalg.LinAlgError:
+                return None, 0.0
+            centered_to_pitch = np.asarray(
+                [[1, 0, 52.5], [0, 1, 34.0], [0, 0, 1]], dtype=float
+            )
+            matrix = centered_to_pitch @ image_to_centered_pitch
+            if abs(matrix[2, 2]) < 1e-9 or not np.isfinite(matrix).all():
+                return None, 0.0
+            matrix /= matrix[2, 2]
+            return matrix.reshape(-1).tolist(), float(parameters.get("confidence", 1))
     return None, 0.0
 
 
@@ -94,11 +131,11 @@ def export(pklz: Path, video: Path, output: Path) -> None:
             "tracks": [],
         }
 
-    for _, row in detections.iterrows():
+    for detection_index, (_, row) in enumerate(detections.iterrows(), start=1):
         track_id = first(row, "track_id")
         image_id = first(row, "image_id")
         bbox = first(row, "bbox_ltwh")
-        if track_id is None or image_id not in image_rows or bbox is None:
+        if image_id not in image_rows or bbox is None:
             continue
         x, y, w, h = [float(value) for value in bbox]
         role = first(row, "role", "role_detection")
@@ -107,7 +144,10 @@ def export(pklz: Path, video: Path, output: Path) -> None:
         pitch = first(row, "bbox_pitch")
         image_rows[image_id]["tracks"].append(
             {
-                "track_id": int(track_id),
+                # Detector-only exports do not have a tracker ID yet. A unique
+                # row ID preserves every low-confidence detection for the
+                # downstream two-stage field-space association.
+                "track_id": int(track_id) if track_id is not None else detection_index,
                 "bbox": [x, y, x + w, y + h],
                 "confidence": float(first(row, "bbox_conf", "confidence", default=0)),
                 "role": role,

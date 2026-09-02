@@ -46,6 +46,13 @@ if [[ ! -s "$RUNTIME_DIR/checkpoints/sam2.1_hiera_large.pt" ]]; then
 fi
 echo "2647878d5dfa5098f2f8649825738a9345572bae2d4350a2468587ece47dd318  $RUNTIME_DIR/checkpoints/sam2.1_hiera_large.pt" | sha256sum -c -
 
+if [[ ! -s "$RUNTIME_DIR/checkpoints/sam2.1_hiera_base_plus.pt" ]]; then
+  curl -fL --retry 12 --retry-delay 5 --retry-all-errors \
+    https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_base_plus.pt \
+    -o "$RUNTIME_DIR/checkpoints/sam2.1_hiera_base_plus.pt"
+fi
+echo "a2345aede8715ab1d5d31b4a509fb160c5a4af1970f199d9054ccfb746c004c5  $RUNTIME_DIR/checkpoints/sam2.1_hiera_base_plus.pt" | sha256sum -c -
+
 echo "SAM 2 runtime ready at $RUNTIME_DIR"
 
 ROOT_DIR="$(dirname "$RUNTIME_DIR")"
@@ -163,6 +170,7 @@ sha256sum "$GSR_RUNTIME_DIR/pretrained_models/yolo/yolo_v8x6_finetuned.pt" \
   "$GSR_RUNTIME_DIR/pretrained_models/reid/hrnetv2_w32_imagenet_pretrained.pth" \
   "$GSR_RUNTIME_DIR/pretrained_models/calibration/pnl_SV_kp" \
   "$GSR_RUNTIME_DIR/pretrained_models/calibration/pnl_SV_lines" \
+  "$RUNTIME_DIR/checkpoints/sam2.1_hiera_base_plus.pt" \
   "$RUNTIME_DIR/checkpoints/sam2.1_hiera_large.pt" \
   > "$ROOT_DIR/MODEL_SHA256SUMS"
 

@@ -61,11 +61,14 @@ Create a project near the application users and execute the migrations in order:
 3. `supabase/migrations/003_service_role_grants.sql`
 4. `supabase/migrations/004_auto_tracking.sql`
 5. `supabase/migrations/005_verify_2026_final_roster.sql`
+6. `supabase/migrations/006_generic_upload_defaults.sql`
 
 They create private `videos` and `artifacts` buckets, owner-scoped RLS policies,
 `projects`, `tracks` and `roster`, per-track mask paths, automatic/manual identity
 fields, calibration paths, stage/progress fields, and the verified 2026 final
-rosters. The secret key is used only by FastAPI.
+rosters. The final migration makes new arbitrary uploads default to generic
+teams without changing existing projects or roster rows. The secret key is used
+only by FastAPI.
 
 For the local demo, set `LOCAL_ADMIN_USER_ID` to an existing Supabase Auth user
 UUID. Browser sign-in and public registration are not part of this flow.
@@ -83,8 +86,8 @@ The script creates:
 
 - a Python 3.11 SAM environment with PyTorch/CUDA, EasyOCR, FFmpeg and the
   compiled SAM 2 CUDA extension;
-- a separate SoccerNet/SoccerMaster game-state environment for football YOLO,
-  PRTReID, StrongSORT and PnLCalib;
+- a separate SoccerNet/SoccerMaster game-state environment for football YOLO
+  and PnLCalib, plus legacy PRTReID/StrongSORT compatibility components;
 - version-pinned checkpoints and checksum manifests under scratch.
 
 The default profile does not install the optional Qwen role model. To prepare
@@ -102,30 +105,39 @@ The checked-in `backend/scripts/job.sbatch` profile requests the authorized TC2
 `normal` QoS, one A40, 10 CPUs, 30 GB system RAM and a two-hour limit. Adjust the
 partition and resources for another cluster.
 
-### Fast profile
+### Default quality/performance profile
 
-The default job profile is the measured portfolio configuration:
+The checked-in job profile separates model sampling rates and fixes the SAM
+compile shape:
 
 ```text
-GSR_ANALYSIS_FPS=5
-GSR_COMBINED=true
+DETECTOR_TRACKER_FPS=10
+REID_APPEARANCE_FPS=5
+CALIBRATION_FPS=5
 GSR_CONCAT_TRACKLETS=false
-SAM_OBJECT_BATCH=64  # measured acceptance override: 96 for 71 Tracks on A40
-SAM_BIDIRECTIONAL=false
-SAM_PROMPTS_PER_TRACK=2
-SAM_VOS_OPTIMIZED=false
+SAM_WINDOW_FRAMES=90
+SAM_WINDOW_OVERLAP=15
+SAM_OBJECT_BATCH=16
+SAM_BIDIRECTIONAL=true
+SAM_PROMPTS_PER_TRACK=3
+SAM_VOS_OPTIMIZED=true
+SAM_PAD_COMPILED_BATCH=true
 ROLE_MODEL_ENABLED=false
 ```
 
-It reconstructs game state at 5 FPS, maps observations back to the 15 FPS SAM
-timeline, runs detection/ReID/tracking/calibration in one TrackLab process, and
-uses one forward SAM propagation anchored by the first detection plus one
-high-quality later prompt. Tracks shorter than two seconds are treated as
-fragments, not unique analysis subjects.
+The football detector observes at 10 FPS. A low-cost HSV appearance descriptor
+is sampled at 5 FPS and contributes only five percent of association score.
+PnLCalib runs independently at 5 FPS and its homographies are temporally
+interpolated to the 15 FPS output timeline. High-confidence detections create
+tracks; low-confidence detections can recover an existing track but never create
+one.
 
-For a slower quality-comparison experiment, set `SAM_BIDIRECTIONAL=true` and
-increase `SAM_PROMPTS_PER_TRACK`. Do not present that profile as the measured
-default unless it is benchmarked separately.
+The default all-person model is `sam2.1_hiera_base_plus.pt`. It processes only
+tracks whose lifetimes intersect a 90-frame window. The final object bucket is
+padded to 16 only inside the compiled predictor, so dynamic object counts do not
+cause a new graph compile; dummy identities are filtered before Mask export.
+Clicking **REFINE SELECTED WITH SAM LARGE** submits a separate one-track job and
+atomically replaces that track's Storage object when the Large Mask succeeds.
 
 ## 5. Start local services
 
@@ -167,8 +179,18 @@ Expected response:
    thin box and Track ID.
 6. Click one box to lazy-load that track's cropped RLE Mask, trajectory, speed,
    distance, team, role, identity confidence and occlusion metrics.
+   Directly verified Mask frames remain the stored source of truth. During
+   playback, an isolated quality-gated gap is bridged visually by projecting the
+   nearest verified contour onto the current detector box, while the reported
+   direct Mask coverage remains unchanged.
 7. If automatic jersey OCR is unavailable, select a verified roster player from
    the correction menu; the manual override persists in Supabase.
+
+The direct upload path defaults to `Unspecified Match`, `Team A` and `Team B`.
+An empty roster is valid: the person remains `Unidentified`, while its Track ID,
+Mask, trajectory, occlusion summary and calibrated movement metrics remain
+available. For a known fixture, populate `roster` and send the matching fixture
+and team labels through the API.
 
 Metric speed is hidden when automatic calibration is invalid. The UI never
 substitutes a fabricated `0 km/h`.
@@ -192,6 +214,16 @@ PYTHONPATH=backend backend/.venv/bin/python \
 
 This decodes every per-track Mask, checks Mask/box consistency, parses every
 calibration frame, counts roles/teams/metric tracks and fully decodes both MP4s.
+
+Structural validation is not ground-truth evaluation. To compute detection
+precision/recall, global IDF1, human-labelled Mask IoU and calibration error,
+copy `validation/annotation-template.json`, label the requested frames and run:
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python \
+  backend/scripts/evaluate_ground_truth.py \
+  /path/to/results /path/to/annotations.json
+```
 
 ## 8. Scope
 

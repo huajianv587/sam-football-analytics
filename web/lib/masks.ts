@@ -78,3 +78,38 @@ export function smallestTrackAt(tracks: Track[], frame: number, x: number, y: nu
       return (a[2] - a[0]) * (a[3] - a[1]) - (b[2] - b[0]) * (b[3] - b[1]);
     })[0]?.track ?? null;
 }
+
+export function nearestFrameValue<T>(values: Map<number, T>, frame: number) {
+  const exact = values.get(frame);
+  if (exact !== undefined) return { frame, value: exact, interpolated: false };
+  let nearestFrame: number | null = null;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  for (const candidate of values.keys()) {
+    const distance = Math.abs(candidate - frame);
+    if (distance < nearestDistance) {
+      nearestFrame = candidate;
+      nearestDistance = distance;
+    }
+  }
+  return nearestFrame === null
+    ? null
+    : { frame: nearestFrame, value: values.get(nearestFrame)!, interpolated: true };
+}
+
+export function projectMaskCrop(
+  crop: { x: number; y: number; width: number; height: number },
+  sourceBox: [number, number, number, number] | undefined,
+  targetBox: [number, number, number, number] | undefined,
+) {
+  if (!sourceBox || !targetBox) return crop;
+  const sourceWidth = Math.max(1, sourceBox[2] - sourceBox[0]);
+  const sourceHeight = Math.max(1, sourceBox[3] - sourceBox[1]);
+  const scaleX = (targetBox[2] - targetBox[0]) / sourceWidth;
+  const scaleY = (targetBox[3] - targetBox[1]) / sourceHeight;
+  return {
+    x: targetBox[0] + (crop.x - sourceBox[0]) * scaleX,
+    y: targetBox[1] + (crop.y - sourceBox[1]) * scaleY,
+    width: crop.width * scaleX,
+    height: crop.height * scaleY,
+  };
+}

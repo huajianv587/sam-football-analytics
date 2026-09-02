@@ -98,6 +98,7 @@ export function OfflineAnalyzer() {
 
   function reset() {
     if (videoUrl) URL.revokeObjectURL(videoUrl);
+    window.localStorage.removeItem(LAST_JOB_KEY);
     setFile(null);
     setVideoUrl("");
     setJobId("");
@@ -116,9 +117,9 @@ export function OfflineAnalyzer() {
       const form = new FormData();
       form.set("video", file);
       form.set("title", file.name.replace(/\.mp4$/i, ""));
-      form.set("match_label", "2026 FIFA World Cup Final");
-      form.set("team_a", "Spain");
-      form.set("team_b", "Argentina");
+      form.set("match_label", "Unspecified Match");
+      form.set("team_a", "Team A");
+      form.set("team_b", "Team B");
       setProgress(5);
       const response = await fetch(`${apiUrl}/v1/offline/jobs`, {
         method: "POST",
@@ -165,7 +166,10 @@ export function OfflineAnalyzer() {
           <h2>{state === "completed" ? "Analysis complete" : state === "failed" ? "Analysis failed" : "Analysis in progress"}</h2>
           <p>{state === "failed" ? message : `${STAGE_LABELS[stage] ?? stage} · ${progress}%${trackCount ? ` · ${trackCount} tracks` : ""}`}</p>
           {(state === "queued" || state === "running") && <div className="progress" style={{ width: "min(520px, 100%)" }}><span style={{ width: `${progress}%` }} /></div>}
-          {state === "completed" ? <a className="button button-primary" href={`/projects/${jobId}/results`}><CheckCircle2 size={16} /> OPEN RESULTS</a> : <button className="button button-secondary" onClick={reset} disabled={state === "queued" || state === "running"}><RotateCcw size={15} /> SELECT ANOTHER VIDEO</button>}
+          <div className="nav-actions">
+            {state === "completed" && <button className="button button-secondary" onClick={reset}><RotateCcw size={15} /> NEW ANALYSIS</button>}
+            {state === "completed" ? <a className="button button-primary" href={`/projects/${jobId}/results`}><CheckCircle2 size={16} /> OPEN RESULTS</a> : <button className="button button-secondary" onClick={reset} disabled={state === "queued" || state === "running"}><RotateCcw size={15} /> SELECT ANOTHER VIDEO</button>}
+          </div>
         </section>
       )}
     </div>

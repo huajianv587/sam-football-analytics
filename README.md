@@ -8,8 +8,9 @@ Mask for every valid Track, and returns an interactive analysis workspace.
 The initial view stays lightweight: every visible subject gets a thin box and
 ID. Click a player to lazy-load only that Track's Mask and show the trajectory,
 speed, distance, team, role, jersey identity confidence and occlusion summary.
-No first-frame boxes, manual calibration, login page or per-click GPU job are
-required.
+No first-frame boxes, manual calibration or login page are required. Base+
+Masks are immediately available after the offline analysis. A selected player
+can optionally be reprocessed by SAM Large as an explicit quality upgrade.
 
 This is a portfolio-grade system rather than a model notebook. It integrates a
 compact Next.js interface, typed FastAPI control plane, Supabase persistence,
@@ -27,10 +28,19 @@ video segmentation, reproducible artifact checks and measured A40 performance.
    full-resolution Masks.
 5. Clicking a box selects the smallest overlapping box under the pointer, then
    downloads and caches only `masks/{track_id}.json.gz`.
-6. Clicking another person switches immediately; previously loaded Masks remain
+6. A directly verified Mask is drawn when available. If quality gating rejects
+   one isolated frame, the browser projects the nearest verified Mask crop onto
+   that Track's current detector box so the selected overlay does not blink;
+   this display interpolation never changes stored inference metrics.
+7. Clicking another person switches immediately; previously loaded Masks remain
    in the browser cache.
-7. A verified Supabase roster can override an uncertain automatic identity and
+8. A verified Supabase roster can override an uncertain automatic identity and
    persists after refresh.
+
+Roster data is optional. Arbitrary footage uses `Unspecified Match`, `Team A`
+and `Team B`; when no matching roster rows exist, identity stays
+`Unidentified` while boxes, Masks, trajectories, speed, distance and occlusion
+analytics continue normally.
 
 The present release processes offline MP4 files. RTSP/HLS, browser cameras,
 handheld cameras and drone feeds are a future input layer over the same
@@ -46,16 +56,16 @@ flowchart LR
     A -->|SSH and rsync| L[Slurm login node]
     L -->|one normal-QoS job| G[NVIDIA A40 worker]
 
-    subgraph R[Automatic game-state reconstruction]
-      D[Football YOLO] --> E[PRTReID]
-      E --> T[BPBReID StrongSORT]
-      T --> C[Temporal continuity gate]
-      C --> H[PnLCalib homography]
+    subgraph R[Multi-rate game-state reconstruction]
+      D[Football YOLO at 10 FPS] --> T[Two-stage field-space association]
+      E[Appearance descriptor at 5 FPS] --> T
+      H[PnLCalib at 5 FPS] --> T
     end
 
     G --> R
-    R -->|Track ID, boxes, pitch coordinates| M[SAM 2.1 Hiera Large]
+    R -->|15 FPS boxes, Track IDs and pitch coordinates| M[SAM 2.1 Base+ in 90-frame windows]
     M --> X[Per-track cropped RLE Masks]
+    X -->|selected Track only| Z[Optional SAM 2.1 Large refinement]
     X --> Q[Speed, team, OCR, occlusion, foreground video]
     Q -->|verified non-empty results| A
 ```
@@ -66,9 +76,9 @@ flowchart LR
 | --- | --- | --- |
 | Web | Next.js 16, React 19, TypeScript, Tailwind, Canvas | Direct upload, real progress, box hit-testing, lazy Mask rendering, trajectory, pitch heatmap, identity correction |
 | Controller | FastAPI, Pydantic, Supabase client | Local-admin ownership, validation, Storage sync, SSH/rsync, Slurm state, result verification |
-| Game state | SoccerNet/SoccerMaster, football YOLO, PRTReID, BPBReID StrongSORT, PnLCalib | Person detection, persistent Track IDs and per-frame pitch calibration |
-| Segmentation | SAM 2.1 Hiera Large, PyTorch, CUDA | Track-conditioned pixel Mask propagation across valid lifetimes |
-| Analytics | OpenCV, NumPy, EasyOCR, FFmpeg | Foot points, metric speed, jersey colour/team, number voting, occlusion metrics, foreground export |
+| Game state | football YOLO, SciPy assignment, OpenCV appearance, PnLCalib | 10 FPS detection, field-registered two-stage association, camera-cut handling and interpolated calibration |
+| Segmentation | SAM 2.1 Hiera Base+ and Large, PyTorch compile, CUDA | Windowed all-person Masks plus optional selected-player refinement |
+| Analytics | OpenCV, NumPy, EasyOCR, FFmpeg | Fused foot observations, field-state smoothing, metric speed/distance, identity, occlusion and foreground export |
 | Data | Supabase Postgres, private Storage, RLS | Projects, tracks, verified roster, source videos, final artifacts |
 | Compute | Slurm, one NVIDIA A40 | Reproducible offline inference without a permanent GPU service |
 
@@ -77,7 +87,7 @@ flowchart LR
 YOLO and SAM solve different problems.
 
 - The football detector answers **who is visible and where?**
-- PRTReID + StrongSORT answer **which temporal identity owns this box?**
+- The field-space tracker answers **which temporal identity owns this box?**
 - PnLCalib answers **where is the image point on a 105 x 68 metre pitch?**
 - SAM answers **which pixels belong to this Track?**
 
@@ -86,65 +96,78 @@ Using detector boxes as the final visualization would lose body contours and
 foreground extraction. PitchVision keeps Track ID as the identity authority and
 SAM as the pixel authority.
 
-All valid Track Masks are precomputed once on the A40. “On demand” refers to
-browser transfer, decoding and rendering—not starting a new GPU job after a
-click. This keeps interaction immediate while avoiding an initial download of
-every full-video Mask.
+All valid Base+ Track Masks are precomputed once on the A40. “On demand” first
+means browser transfer, decoding and rendering, so clicking is immediate. The
+separate Large button is an optional background refinement for one already
+tracked person; it is never required to inspect the Base+ result.
 
 ## GPU pipeline
 
 ### 1. Normalize
 
 - Accept MP4/H.264, maximum 50 MB and 60 seconds in the demo API.
-- Normalize to a maximum of 1280 x 720 at 15 FPS without enlarging the source.
+- Normalize to a maximum of 1920 x 1080 at 15 FPS without enlarging the source.
 - Extract ordered JPEG frames for SAM and retain `normalized.mp4` as the exact
   coordinate space used by all outputs.
 
-### 2. Reconstruct game state
+### 2. Reconstruct game state at independent rates
 
-- Run the football-specific `yolo_v8x6_finetuned.pt` detector.
-- Compute PRTReID embeddings and update BPBReID StrongSORT identities.
-- Keep StrongSORT IDs authoritative and disable SoccerNet's global
-  appearance-only tracklet concatenation. Players on one team share a kit, so
-  merging disjoint fragments by ReID distance alone can silently join two
-  different people. The tracker retains at most three seconds of missed state
-  at the 5 FPS reconstruction rate and otherwise issues a new ID.
-- Estimate keypoints, pitch lines and per-frame homography with PnLCalib.
-- Exclude off-pitch people when calibration is available while retaining tracks
-  if calibration is unavailable.
-- Treat tracks shorter than two seconds as detector fragments, not unique
-  analysis subjects.
+- Run `yolo_v8x6_finetuned.pt` at 10 FPS and retain person detections down to
+  confidence `0.05`.
+- Match high-confidence detections first. A second pass may use a low-confidence
+  box to recover an existing Track, but cannot create a new one.
+- Score association as `0.45 field position + 0.25 image motion + 0.15 box IoU
+  + 0.10 team + 0.05 appearance`. Team stays neutral until Mask colour is
+  available, so it cannot force a merge.
+- Sample the lightweight HSV appearance descriptor at 5 FPS. It is supporting
+  evidence rather than the identity authority because same-team shirts are
+  deliberately similar.
+- Reject motion above the physical field gate, role changes and image jumps;
+  create a new ID after 1.5 seconds unmatched. A broadcast cut clears all live
+  Tracks immediately.
+- Run PnLCalib independently at 5 FPS, smooth isolated coefficient spikes and
+  interpolate homographies to the 15 FPS output timeline.
 
-The measured fast profile analyzes game state at 5 FPS and maps observations
-back to the 15 FPS SAM timeline. Detection, ReID, tracking and calibration run
-inside one TrackLab process so models and video metadata are not repeatedly
-initialized.
+This replaces the old appearance-led StrongSORT default. PRTReID/StrongSORT
+remain available in the remote compatibility environment but are not executed
+by the normal profile.
 
-### 3. Segment every valid Track
+### 3. Segment active lifetimes, then refine only when requested
 
-- Load `sam2.1_hiera_large.pt` on CUDA with BF16, TF32 and cuDNN benchmarking.
+- Load `sam2.1_hiera_base_plus.pt` for all people with BF16, TF32, cuDNN
+  benchmarking and full VOS compile.
 - Keep Track ID ownership fixed; SAM never invents or reassigns an ID.
-- Use the first valid detection and one high-quality later box/body-point prompt.
-- Propagate once in the forward direction. The conservative controller default
-  is 64 objects per batch; the measured A40 acceptance run used a 96-object
-  ceiling and processed all 71 accepted Tracks in one batch.
+- Split the video into 90-frame windows with 15-frame overlap. A Track is loaded
+  only when its lifetime intersects that window and disappears from state when
+  its lifetime ends.
+- Process 16 identities per bucket and pad only the final compiled bucket to a
+  fixed shape. Dummy corner identities are never written to results.
+- Select up to three clear, low-occlusion box/body-point prompts and propagate
+  both forward and backward inside the valid lifetime. Both directions start
+  from one common conditioned anchor, partitioning the window instead of
+  recomputing the frames between the earliest and latest prompts.
 - Reject a predicted Mask on a detector-observed frame when its Mask/box IoU is
   below `0.1`.
 - Crop each RLE payload to its non-zero rectangle while retaining full-frame
   dimensions. Legacy full-frame RLE remains readable.
-
-The default deliberately disables the compiled VOS path: on the tested
-PyTorch/CUDA stack, dynamic object counts caused recompilation and slower
-first-run performance. `SAM_BIDIRECTIONAL=true` remains available for a slower
-quality-comparison profile.
+- A user-selected Track may run `sam2.1_hiera_large.pt` in a one-object Slurm
+  job. The refined object replaces only that Track's Mask after a non-empty
+  result is verified.
 
 ### 4. Derive analytics
 
-- Define the foot point as the median horizontal location of the bottom 5% of
-  Mask pixels.
-- Project valid foot points through that frame's homography.
-- Smooth speed with a five-frame median filter followed by EMA, then report
-  current/average/maximum km/h and cumulative distance.
+- Use the detector-box bottom centre as the stable base observation. A SAM
+  bottom-5% foot point contributes a 20% correction only when Mask/box IoU is at
+  least `0.65` and it is spatially plausible.
+- Keep trajectory and speed observations on every accepted detection frame;
+  an isolated rejected SAM frame affects only that pixel overlay, not the
+  synchronized movement panel.
+- Project observations through that frame's homography and run a robust
+  five-frame median plus constant-velocity alpha-beta state estimate in metric
+  field space.
+- Reject speeds above 50 km/h, acceleration above 12 m/s² and calibration
+  jumps. Compute cumulative distance from the smoothed trajectory rather than
+  summing raw Mask jitter; hide maximum speed until a Track spans one second.
 - Hide metric values when calibration is invalid; never fabricate `0 km/h`.
 - Classify team/referee from the upper-body Mask colour in Lab space.
 - Run digit-only EasyOCR on a small set of sharp per-track torso crops and fuse
@@ -205,21 +228,31 @@ filled only from the final verified Slurm result bundle.
 | Metric | Measured result |
 | --- | ---: |
 | Slurm state / exit code | `COMPLETED / 0:0` |
-| Slurm wall time | `16m 22s` |
-| Frames / valid Track lifetimes | `450 / 71` |
-| Raw / accepted tracker IDs | `538 / 71` |
-| Median / maximum people visible per frame | `12 / 16` |
-| End-to-end worker time / throughput | `974.20s / 0.46 FPS` |
-| Game-state reconstruction time | `243.80s` |
-| SAM segmentation time | `669.01s` |
-| Mask post-processing / OCR time | `38.34s / 5.16s` |
-| Average / peak GPU utilization | `57.54% / 100%` |
-| NVIDIA / PyTorch peak memory | `33,883 / 31,580 MB` |
+| Slurm wall time | `14m 47s` |
+| Frames / valid Track lifetimes | `450 / 44` |
+| Field-space Track IDs created / retained | `45 / 44` |
+| Minimum / median / maximum people visible per frame | `13 / 23 / 39` |
+| End-to-end worker time / throughput | `878.67s / 0.51 FPS` |
+| Game-state reconstruction time | `208.60s` |
+| SAM segmentation time | `548.30s` |
+| Mask post-processing / OCR time | `96.80s / 3.13s` |
+| Average / peak GPU utilization | `39.32% / 100%` |
+| NVIDIA / PyTorch peak memory | `15,561 / 4,128.61 MB` |
 | Automatic calibration valid rate | `450/450 (100%)` |
-| Mask-box IoU mean / median / p10 | `0.4825 / 0.4880 / 0.1827` |
-| Mask centroid inside detector box | `84.71%` |
+| Mask-box IoU mean / median / p10 | `0.6028 / 0.6417 / 0.2836` |
+| Mask centroid inside detector box | `91.35%` |
+| Direct verified Mask coverage mean / median | `67.83% / 69.00%` |
+| Active / dense object-frames | `12,194 / 19,800 (38.41% avoided)` |
+| Tracks with metric speed | `43/44` |
 | Long gaps over 3s / impossible short jumps | `0 / 0` |
 | Fully decoded result videos | `450/450 + 450/450 frames` |
+
+This acceptance used generic match metadata and an empty matching roster. All
+44 identities therefore remained honestly unlabelled while 44 per-Track Mask
+artifacts, continuous trajectories and 43 calibrated speed summaries were
+produced. The per-frame direct Mask coverage is reported above; rejected frames
+stay rejected in the artifacts even though the result player can visually bridge
+an isolated gap from the nearest verified contour.
 
 The validator checks structural and internal consistency, not ground-truth
 accuracy. A detector box is not a human Mask annotation, so Mask/box IoU must not
@@ -227,9 +260,15 @@ be misreported as segmentation IoU. Likewise, this clip does not provide
 ground-truth identities or surveyed control points; therefore the repository
 does not claim measured IDF1, human-labelled Mask IoU or metric projection error.
 
-The original stretch target was 15 minutes. This quality-first run finished in
-16 minutes 22 seconds, so the target was missed by 82 seconds; the measured
-number is reported instead of rounding it down.
+The original 15-minute acceptance target was met by 13 seconds. The later
+8–10-minute optimization target was not met: this quality-first run took 14
+minutes 47 seconds. Model and compile caches are retained in scratch, but the
+reported number remains the actual end-to-end Slurm wall time rather than a
+projected warm-run estimate.
+
+A separate selected-player SAM Large smoke job completed in 26 seconds and
+returned 44 non-empty Mask frames out of a 45-frame lifetime. It validates the
+refinement path; it is not included in the all-person wall time above.
 
 The wide broadcast source makes many jersey numbers physically unreadable. A
 zero-name automatic result on such footage is an honest `Unidentified` outcome,
@@ -244,13 +283,12 @@ not evidence that the verified roster or manual correction path is broken.
    Masks once, split them by Track, then transfer and render only the selected
    subject.
 3. **A wrong identity is worse than a new identity.** Temporal tracking gates,
-   disabled global appearance-only concatenation and a two-second validity gate
-   avoid presenting detector fragments as meaningful people or stitching two
-   similar shirts into one player.
-4. **Speed comes from removing wasted work.** Low-rate game-state analysis,
-   combined model stages, one SAM direction, vectorized cropped RLE and removal
-   of a default 7B role model reduce real latency. Allocating dummy tensors to
-   “fill VRAM” does not.
+   disabled global appearance-only concatenation, a 0.7-second tracker gate and
+   a two-second all-person Mask gate avoid presenting detector fragments as
+   meaningful people or stitching two similar shirts into one player.
+4. **Spend compute where evidence changes.** Detection needs 10 FPS, appearance
+   and calibration do not; SAM needs 15 FPS contours but only over active Track
+   lifetimes. Fixed compile shapes are useful, dummy VRAM allocation is not.
 5. **Missing evidence must stay missing.** Invalid calibration means no metric
    speed; unreadable numbers mean `Unidentified`; an unlabelled clip means no
    fabricated IDF1 or Mask IoU claim.
@@ -273,6 +311,8 @@ not evidence that the verified roster or manual correction path is broken.
 | `GET` | `/v1/jobs/{project_id}` | Job state from Supabase, `squeue` and `sacct` |
 | `GET` | `/v1/projects/{project_id}/results` | Project, roster, tracks and signed result URLs |
 | `PATCH` | `/v1/projects/{project_id}/tracks/{object_id}/identity` | Apply or clear a roster override |
+| `POST` | `/v1/projects/{project_id}/tracks/{object_id}/refine` | Queue selected-player SAM Large refinement |
+| `GET` | `/v1/projects/{project_id}/tracks/{object_id}/refine` | Poll refinement and return the refreshed signed Mask URL |
 
 Terminal states are `completed` only when Slurm succeeds and all required result
 files are present and non-empty.
@@ -323,7 +363,7 @@ npm run lint
 npm run build
 ```
 
-The current codebase passes 50 backend tests, 6 frontend tests, ESLint and the
+The current codebase passes 61 backend tests, 8 frontend tests, ESLint and the
 Next.js production build. GPU artifacts are additionally checked with
 `backend/scripts/validate_artifacts.py`.
 
@@ -331,8 +371,9 @@ Next.js production build. GPU artifacts are additionally checked with
 
 - Continuous shots only. A camera cut creates new IDs; cross-shot identity is not
   promised.
-- Very short appearances are kept out of expensive Mask analysis until they
-  persist for two seconds.
+- The field tracker rejects detections shorter than roughly 0.7 seconds; the
+  expensive all-person Mask stage requires two seconds of accepted presence.
+  Unmatched live Tracks expire after 1.5 seconds.
 - OCR depends on actual torso pixel resolution and does not guess names.
 - Automatic calibration may be unavailable for tight, replay or non-pitch views.
 - Public or commercial deployment requires authentication, privacy review,

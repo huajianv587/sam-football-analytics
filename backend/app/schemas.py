@@ -96,6 +96,15 @@ class IdentityUpdateRequest(BaseModel):
     roster_id: int | None = Field(default=None, ge=1)
 
 
+class RefinementResponse(BaseModel):
+    project_id: UUID
+    object_id: int = Field(ge=1)
+    state: Literal["base_ready", "queued", "running", "large_ready", "failed"]
+    slurm_job_id: str | None = None
+    mask_url: str | None = None
+    message: str | None = None
+
+
 class HealthResponse(BaseModel):
     status: Literal["ok"] = "ok"
     scheduler: Literal["tc2-slurm"] = "tc2-slurm"

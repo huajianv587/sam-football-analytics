@@ -1,8 +1,9 @@
+import cv2
 import numpy as np
 import pytest
 
 from app.schemas import CreateJobRequest
-from gsr.export_state import calibration_support, jersey_value
+from gsr.export_state import calibration_support, homography_from_parameters, jersey_value
 from gsr.role_logic import (
     parse_role,
     representative_detections,
@@ -19,7 +20,13 @@ from worker.game_state import (
     track_continuity_metrics,
     track_windows,
 )
-from worker.main import jersey_collage, mask_quality, roster_match
+from worker.main import (
+    has_configured_fixture,
+    jersey_collage,
+    mask_quality,
+    motion_sample,
+    roster_match,
+)
 from scripts.validate_artifacts import continuity_report
 
 
@@ -179,6 +186,27 @@ def test_calibration_support_reflects_visible_pitch_evidence() -> None:
     assert calibration_support({"keypoints": {str(index): {} for index in range(20)}}) == 1
 
 
+def test_camera_parameters_export_image_to_metric_pitch_homography() -> None:
+    matrix, confidence = homography_from_parameters(
+        {
+            "x_focal_length": 1437.817998355824,
+            "y_focal_length": 1437.817998355824,
+            "principal_point": [639.5, 359.5],
+            "position_meters": [0.1631407516779283, 68.06586379355689, -13.415906222325093],
+            "rotation_matrix": [
+                [0.9979889093896481, 0.06338374515230419, 0.0007984896543973274],
+                [-0.013415264887906661, 0.1988809609631155, 0.979931831320105],
+                [0.06195294507323863, -0.9779718115655763, 0.1993313030607506],
+            ],
+        }
+    )
+    point = cv2.perspectiveTransform(
+        np.float32([[[406.27, 505.44]]]), np.asarray(matrix).reshape(3, 3)
+    )[0, 0]
+    assert confidence == 1
+    assert point == pytest.approx([48.11, 58.58], abs=0.05)
+
+
 def test_roster_match_requires_high_confidence_team_and_number() -> None:
     roster = [
         {"id": 7, "team": "Spain", "squad_number": 10, "player_name": "Player", "position": "FW"}
@@ -186,6 +214,31 @@ def test_roster_match_requires_high_confidence_team_and_number() -> None:
     assert roster_match(roster, "Spain", 10, 0.8) == roster[0]
     assert roster_match(roster, "Spain", 10, 0.4) is None
     assert roster_match(roster, "Argentina", 10, 0.8) is None
+
+
+def test_empty_roster_does_not_block_an_unidentified_track() -> None:
+    assert roster_match([], "Team A", 10, 0.99) is None
+
+
+def test_generic_upload_does_not_enable_fixture_colour_labels() -> None:
+    assert has_configured_fixture(
+        {"match_label": "Unspecified Match", "team_a": "Team A", "team_b": "Team B"}
+    ) is False
+    assert has_configured_fixture(
+        {"match_label": "Known Match", "team_a": "Red", "team_b": "Blue"}
+    ) is True
+
+
+def test_motion_sample_keeps_metric_trajectory_when_mask_is_missing() -> None:
+    sample = motion_sample(
+        15,
+        {"bbox": [10, 20, 30, 60], "confidence": 0.9},
+        {"valid": True, "homography": np.eye(3).reshape(-1).tolist()},
+    )
+    assert sample["mask_available"] is False
+    assert sample["position_source"] == "bbox"
+    assert sample["foot"] == [20.0, 60.0]
+    assert sample["pitch"] == [20.0, 60.0]
 
 
 def test_jersey_parser_never_guesses_invalid_text() -> None:

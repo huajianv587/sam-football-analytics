@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 
 MAX_PLAYER_SPEED_KMH = 50.0
+MAX_PLAYER_ACCELERATION_MPS2 = 12.0
 
 
 def compute_homography(
@@ -25,35 +26,93 @@ def project_point(point: tuple[float, float], homography: np.ndarray) -> tuple[f
     return round(float(target[0]), 3), round(float(target[1]), 3)
 
 
-def speed_series(points: Sequence[tuple[float, float] | None], fps: float) -> list[float | None]:
+def smooth_metric_positions(
+    points: Sequence[tuple[float, float] | None], fps: float
+) -> list[tuple[float, float] | None]:
+    """Robust field-space state estimate used by both speed and distance.
+
+    A five-frame median suppresses foot-point noise, then a constant-velocity
+    alpha-beta update rejects physically impossible camera/calibration jumps.
+    Missing calibration remains missing instead of being silently predicted.
+    """
     positions = np.full((len(points), 2), np.nan, dtype=np.float64)
     for index, point in enumerate(points):
         if point is not None:
             positions[index] = point
-
-    lag = 1
+    median = positions.copy()
     if len(points) >= 10:
-        lag = 5
-        filtered = np.full_like(positions, np.nan)
+        median[:] = np.nan
         for index, point in enumerate(points):
             if point is None:
                 continue
             window = positions[max(0, index - 2) : min(len(points), index + 3)]
             valid = window[~np.isnan(window).any(axis=1)]
             if len(valid):
-                filtered[index] = np.median(valid, axis=0)
-        previous: np.ndarray | None = None
-        for index, point in enumerate(filtered):
-            if np.isnan(point).any():
-                previous = None
-                continue
-            filtered[index] = point if previous is None else 0.35 * point + 0.65 * previous
-            previous = filtered[index]
-        positions = filtered
+                median[index] = np.median(valid, axis=0)
+
+    output = np.full_like(median, np.nan)
+    estimate: np.ndarray | None = None
+    velocity = np.zeros(2, dtype=np.float64)
+    dt = 1.0 / fps
+    missing = 0
+    for index, measurement in enumerate(median):
+        if np.isnan(measurement).any():
+            missing += 1
+            if missing > max(2, round(fps * 0.5)):
+                estimate = None
+                velocity[:] = 0
+            continue
+        if estimate is None:
+            estimate = measurement.copy()
+            output[index] = estimate
+            missing = 0
+            continue
+        if missing:
+            estimate = measurement.copy()
+            velocity[:] = 0
+            output[index] = estimate
+            missing = 0
+            continue
+        predicted = estimate + velocity * dt * (missing + 1)
+        residual = measurement - predicted
+        implied_speed = float(np.linalg.norm(measurement - estimate)) * fps / (missing + 1)
+        if implied_speed * 3.6 > MAX_PLAYER_SPEED_KMH:
+            # Begin a new physically plausible segment without publishing the
+            # discontinuity itself as a position or speed observation.
+            estimate = measurement.copy()
+            velocity[:] = 0
+            missing += 1
+            continue
+        if not np.any(velocity):
+            velocity = (measurement - estimate) / dt
+            estimate = measurement.copy()
+        else:
+            correction = 0.45 * residual
+            estimate = predicted + correction
+            velocity += 0.10 * residual / max(dt * (missing + 1), 1e-6)
+        speed = float(np.linalg.norm(velocity))
+        if speed * 3.6 > MAX_PLAYER_SPEED_KMH:
+            velocity *= (MAX_PLAYER_SPEED_KMH / 3.6) / speed
+        output[index] = estimate
+        missing = 0
+    return [
+        None if np.isnan(value).any() else (round(float(value[0]), 3), round(float(value[1]), 3))
+        for value in output
+    ]
+
+
+def speed_series(points: Sequence[tuple[float, float] | None], fps: float) -> list[float | None]:
+    filtered_points = smooth_metric_positions(points, fps)
+    positions = np.full((len(filtered_points), 2), np.nan, dtype=np.float64)
+    for index, point in enumerate(filtered_points):
+        if point is not None:
+            positions[index] = point
+
+    lag = 5 if len(points) >= 10 else 1
 
     raw = np.full(len(points), np.nan, dtype=np.float64)
     for index in range(lag, len(points)):
-        if any(point is None for point in points[index - lag : index + 1]):
+        if any(point is None for point in filtered_points[index - lag : index + 1]):
             continue
         speed = np.linalg.norm(positions[index] - positions[index - lag]) * fps / lag * 3.6
         if speed <= MAX_PLAYER_SPEED_KMH:
@@ -73,15 +132,34 @@ def speed_series(points: Sequence[tuple[float, float] | None], fps: float) -> li
         if np.isnan(value):
             previous = None
             continue
-        smoothed[index] = value if previous is None else alpha * value + (1 - alpha) * previous
+        candidate = value if previous is None else alpha * value + (1 - alpha) * previous
+        if previous is not None:
+            acceleration = abs(candidate - previous) / 3.6 * fps
+            if acceleration > MAX_PLAYER_ACCELERATION_MPS2:
+                continue
+        smoothed[index] = candidate
         previous = float(smoothed[index])
     return [None if np.isnan(value) else round(float(value), 2) for value in smoothed]
 
 
 def traveled_distance(points: Sequence[tuple[float, float] | None], fps: float | None = None) -> float:
     if fps is not None:
-        speeds = [speed for speed in speed_series(points, fps) if speed is not None]
-        return round(sum(speeds) / 3.6 / fps, 2)
+        filtered = smooth_metric_positions(points, fps)
+        total = 0.0
+        for previous, current in zip(filtered, filtered[1:]):
+            if previous is None or current is None:
+                continue
+            distance = float(np.linalg.norm(np.subtract(current, previous)))
+            if distance * fps * 3.6 <= MAX_PLAYER_SPEED_KMH:
+                total += distance
+        if not total:
+            for previous, current in zip(points, points[1:]):
+                if previous is None or current is None:
+                    continue
+                distance = float(np.linalg.norm(np.subtract(current, previous)))
+                if distance * fps * 3.6 <= MAX_PLAYER_SPEED_KMH:
+                    total += distance
+        return round(total, 2)
     total = 0.0
     for previous, current in zip(points, points[1:]):
         if previous is not None and current is not None:

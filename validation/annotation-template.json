@@ -1,0 +1,16 @@
+{
+  "description": "Copy this file and annotate exactly 30 sampled frames. bbox uses x1,y1,x2,y2 pixels; mask_rle and pitch are optional but required for Mask IoU and calibration error.",
+  "frames": [
+    {
+      "frame": 0,
+      "objects": [
+        {
+          "gt_id": "player-01",
+          "bbox": [0, 0, 1, 1],
+          "mask_rle": null,
+          "pitch": null
+        }
+      ]
+    }
+  ]
+}

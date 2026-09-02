@@ -4,7 +4,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from .auth import current_user_id
 from .config import get_settings
 from .job_runner import JobRunner
-from .schemas import AnalysisMode, CreateJobRequest, HealthResponse, IdentityUpdateRequest, JobResponse
+from .schemas import (
+    AnalysisMode,
+    CreateJobRequest,
+    HealthResponse,
+    IdentityUpdateRequest,
+    JobResponse,
+    RefinementResponse,
+)
 from .supabase_gateway import SupabaseGateway
 
 app = FastAPI(title="SAM Football Analytics API", version="0.1.0")
@@ -46,9 +53,9 @@ async def create_job(request: CreateJobRequest, owner_id: str = Depends(current_
 async def create_offline_job(
     video: UploadFile = File(),
     title: str = Form("Offline Football Analysis"),
-    match_label: str = Form("2026 FIFA World Cup Final"),
-    team_a: str = Form("Spain"),
-    team_b: str = Form("Argentina"),
+    match_label: str = Form("Unspecified Match"),
+    team_a: str = Form("Team A"),
+    team_b: str = Form("Team B"),
     owner_id: str = Depends(current_user_id),
 ) -> JobResponse:
     if video.content_type != "video/mp4":
@@ -133,3 +140,40 @@ async def update_track_identity(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post(
+    "/v1/projects/{project_id}/tracks/{object_id}/refine",
+    response_model=RefinementResponse,
+    status_code=202,
+)
+async def refine_track(
+    project_id: str,
+    object_id: int,
+    owner_id: str = Depends(current_user_id),
+) -> RefinementResponse:
+    try:
+        return RefinementResponse.model_validate(
+            await runner().submit_refinement(project_id, object_id, owner_id)
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get(
+    "/v1/projects/{project_id}/tracks/{object_id}/refine",
+    response_model=RefinementResponse,
+)
+async def refinement_status(
+    project_id: str,
+    object_id: int,
+    owner_id: str = Depends(current_user_id),
+) -> RefinementResponse:
+    try:
+        return RefinementResponse.model_validate(
+            runner().refinement_status(project_id, object_id, owner_id)
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc

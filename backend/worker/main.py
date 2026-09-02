@@ -2,6 +2,7 @@ import argparse
 import gzip
 import heapq
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -21,6 +22,7 @@ from .analytics import (
     occlusion_metrics,
     ocr_vote,
     project_point,
+    smooth_metric_positions,
     speed_series,
     traveled_distance,
 )
@@ -31,11 +33,11 @@ from .game_state import (
     load_game_state,
     manual_game_state,
     on_pitch_tracks,
-    resample_game_state,
     select_prompt_detections,
     track_continuity_metrics,
     track_windows,
 )
+from .field_tracker import field_space_track, interpolate_calibrations, resample_tracks
 from .rle import decode_mask, encode_mask, mask_bbox, mask_foot_point
 
 
@@ -102,63 +104,53 @@ def extract_frames(video: Path, directory: Path) -> list[Path]:
 
 def run_game_state_reconstruction(job_dir: Path, video: Path) -> tuple[Path, dict[str, float]]:
     runtime = Path(os.environ["GSR_RUNTIME_DIR"])
-    environment = os.environ.copy()
     capture = cv2.VideoCapture(str(video))
     frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
     width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
     capture.release()
-    gsr_fps = float(os.getenv("GSR_ANALYSIS_FPS", str(FPS)))
-    gsr_video = video
+    detector_fps = float(os.getenv("DETECTOR_TRACKER_FPS", "10"))
+    calibration_fps = float(os.getenv("CALIBRATION_FPS", "5"))
     timings: dict[str, float] = {}
-    if gsr_fps < FPS:
+
+    def prepare_rate_video(name: str, analysis_fps: float) -> Path:
+        if abs(analysis_fps - FPS) < 1e-6:
+            return video
+        output = job_dir / f"{name}-input.mp4"
         prepared = time.perf_counter()
-        gsr_video = job_dir / "gsr-input.mp4"
         run(
             [
-                "ffmpeg", "-y", "-i", str(video), "-vf", f"fps={gsr_fps}",
+                "ffmpeg", "-y", "-i", str(video), "-vf", f"fps={analysis_fps}",
                 "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "20",
-                "-pix_fmt", "yuv420p", str(gsr_video),
+                "-pix_fmt", "yuv420p", str(output),
             ]
         )
-        timings["gsr_prepare_seconds"] = time.perf_counter() - prepared
-    environment.update(
-        {
-            "GSR_PROJECT_DIR": str(runtime),
-            "PITCHVISION_VIDEO": str(gsr_video),
-            "PITCHVISION_WIDTH": str(width),
-            "PITCHVISION_HEIGHT": str(height),
-        }
-    )
+        timings[f"{name}_prepare_seconds"] = time.perf_counter() - prepared
+        return output
+
+    detector_video = prepare_rate_video("detector", detector_fps)
+    calibration_video = prepare_rate_video("calibration", calibration_fps)
     config_dir = job_dir / "gsr"
-    tracking_pipeline = ["bbox_detector", "reid", "track"]
-    if os.getenv("GSR_CONCAT_TRACKLETS", "false").lower() == "true":
-        tracking_pipeline.append("concat_tracklets_by_reid")
-    if os.getenv("GSR_COMBINED", "false").lower() == "true":
-        stages = [
-            (
-                "reconstruct",
-                12,
-                [*tracking_pipeline, "pitch", "calibration"],
-                job_dir / "game-state.pklz",
-            )
-        ]
-    else:
-        stages = [
-            ("detect", 12, ["bbox_detector"], job_dir / "detections.pklz"),
-            (
-                "track",
-                26,
-                tracking_pipeline[1:],
-                job_dir / "tracked.pklz",
-            ),
-            ("calibrate", 42, ["pitch", "calibration"], job_dir / "game-state.pklz"),
-        ]
-    load_state: Path | None = None
-    for name, progress, pipeline, save_state in stages:
+
+    def run_stage(
+        name: str,
+        progress: int,
+        pipeline: list[str],
+        source_video: Path,
+        save_state: Path,
+    ) -> Path:
         set_progress(job_dir, name, progress)
-        environment["PITCHVISION_STATE"] = str(save_state)
-        environment["PITCHVISION_RUN_DIR"] = str(job_dir / f"gsr-{name}")
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "GSR_PROJECT_DIR": str(runtime),
+                "PITCHVISION_VIDEO": str(source_video),
+                "PITCHVISION_WIDTH": str(width),
+                "PITCHVISION_HEIGHT": str(height),
+                "PITCHVISION_STATE": str(save_state),
+                "PITCHVISION_RUN_DIR": str(job_dir / f"gsr-{name}"),
+            }
+        )
         started = time.perf_counter()
         run(
             [
@@ -166,30 +158,56 @@ def run_game_state_reconstruction(job_dir: Path, video: Path) -> tuple[Path, dic
                 "python", "-m", "tracklab.main", "--config-path", str(config_dir),
                 "--config-name", "pitchvision",
                 f"pipeline=[{','.join(pipeline)}]",
-                f"state.load_file={load_state if load_state else 'null'}",
+                "state.load_file=null",
                 f"state.save_file={save_state}",
             ],
             cwd=runtime / "SoccerMaster" / "codes" / "sn-gamestate",
             env=environment,
         )
         timings[f"{name}_seconds"] = time.perf_counter() - started
-        load_state = save_state
-    output = job_dir / "game-state.json"
-    run(
-        [
-            "conda", "run", "--no-capture-output", "-p", str(runtime / "env"),
-            "python", str(config_dir / "export_state.py"), str(load_state),
-            str(gsr_video), str(output),
-        ],
-        env=environment,
-    )
-    if gsr_video != video:
-        state = resample_game_state(
-            json.loads(output.read_text()),
-            target_frame_count=frame_count,
-            target_fps=FPS,
+        exported = job_dir / f"{name}-state.json"
+        run(
+            [
+                "conda", "run", "--no-capture-output", "-p", str(runtime / "env"),
+                "python", str(config_dir / "export_state.py"), str(save_state),
+                str(source_video), str(exported),
+            ],
+            env=environment,
         )
-        output.write_text(json.dumps(state, separators=(",", ":")))
+        return exported
+
+    detection_json = run_stage(
+        "detect", 12, ["bbox_detector"], detector_video, job_dir / "detections.pklz"
+    )
+    calibration_json = run_stage(
+        # PnLCalib's camera solver and bbox-to-pitch projector are one TrackLab
+        # module, so it requires bbox_ltwh columns. A 5 FPS detector supplies
+        # only that schema; ReID and association still run solely at their
+        # independent rates.
+        "calibrate", 28, ["bbox_detector", "pitch", "calibration"], calibration_video,
+        job_dir / "calibration.pklz",
+    )
+    detection_state = json.loads(detection_json.read_text())
+    calibration_state = json.loads(calibration_json.read_text())
+    detector_calibrations = interpolate_calibrations(
+        calibration_state, len(detection_state["frames"]), detector_fps
+    )
+    set_progress(job_dir, "track", 40)
+    tracking_started = time.perf_counter()
+    tracked_state, association_metrics = field_space_track(
+        detection_state, detector_calibrations, detector_video
+    )
+    timings["field_track_seconds"] = time.perf_counter() - tracking_started
+    timings.update({
+        f"field_tracker_{key}": value
+        for key, value in association_metrics.items()
+        if isinstance(value, (int, float))
+    })
+    full_calibrations = interpolate_calibrations(calibration_state, frame_count, FPS)
+    state = resample_tracks(tracked_state, full_calibrations, frame_count, FPS)
+    state["association_metrics"] = association_metrics
+    output = job_dir / "game-state.json"
+    output.write_text(json.dumps(state, separators=(",", ":")))
     return output, timings
 
 
@@ -359,14 +377,85 @@ def mask_quality(mask: np.ndarray, detection: dict[str, Any] | None) -> float:
     return bbox_iou(bbox, detection["bbox"]) if detection else 0.5
 
 
+def motion_sample(
+    frame_index: int,
+    detection: dict[str, Any],
+    calibration: dict[str, Any],
+    mask: np.ndarray | None = None,
+) -> dict[str, Any]:
+    """Build a metric observation even when a SAM frame is unavailable.
+
+    Detection and calibration own the continuous trajectory. A sufficiently
+    trustworthy SAM foot point can only make a small correction, so a rejected
+    or missing Mask never blanks an otherwise valid speed observation.
+    """
+    display_bbox = [round(float(value), 2) for value in detection["bbox"]]
+    detection_foot = (
+        (float(detection["bbox"][0]) + float(detection["bbox"][2])) / 2,
+        float(detection["bbox"][3]),
+    )
+    mask_foot = mask_foot_point(mask) if mask is not None else None
+    quality = mask_quality(mask, detection) if mask is not None else 0.0
+    bbox_height = max(1.0, float(display_bbox[3]) - float(display_bbox[1]))
+    mask_correction_valid = bool(
+        mask_foot is not None
+        and quality >= 0.65
+        and math.dist(mask_foot, detection_foot) <= 0.25 * bbox_height
+    )
+    foot = (
+        (
+            0.8 * detection_foot[0] + 0.2 * mask_foot[0],
+            0.8 * detection_foot[1] + 0.2 * mask_foot[1],
+        )
+        if mask_correction_valid and mask_foot is not None
+        else detection_foot
+    )
+    pitch_point = None
+    if calibration.get("valid"):
+        homography = np.asarray(calibration["homography"], dtype=np.float64).reshape(3, 3)
+        candidate = project_point(foot, homography)
+        if -1 <= candidate[0] <= 106 and -1 <= candidate[1] <= 69:
+            pitch_point = candidate
+
+    if mask is not None and mask.any():
+        mask_ys, mask_xs = np.where(mask)
+        centroid = [round(float(mask_xs.mean()), 2), round(float(mask_ys.mean()), 2)]
+        area = int(mask.sum())
+    else:
+        centroid = [
+            round((display_bbox[0] + display_bbox[2]) / 2, 2),
+            round((display_bbox[1] + display_bbox[3]) / 2, 2),
+        ]
+        area = 0
+
+    return {
+        "frame": frame_index,
+        "time": round(frame_index / FPS, 3),
+        "bbox": display_bbox,
+        "foot": [round(foot[0], 2), round(foot[1], 2)],
+        "centroid": centroid,
+        "pitch": list(pitch_point) if pitch_point else None,
+        "area": area,
+        "mask_available": mask is not None,
+        "mask_quality": round(float(quality), 3),
+        "position_source": "bbox+mask" if mask_correction_valid else "bbox",
+    }
+
+
 def propagation_directions(
     prompts: dict[int, list[dict[str, Any]]], bidirectional: bool
 ) -> list[tuple[int, bool]]:
     first = min(prompt["frame"] for items in prompts.values() for prompt in items)
     if not bidirectional:
         return [(first, False)]
-    last = max(prompt["frame"] for items in prompts.values() for prompt in items)
-    return [(first, False), (last, True)]
+    real_prompt_sets = [
+        items for track_id, items in prompts.items() if track_id >= 0 and items
+    ]
+    # Start only after every real object has at least one conditioning prompt.
+    # Forward and reverse then partition the window around one shared anchor;
+    # starting at the earliest and latest prompts would recompute most frames.
+    anchor = max(min(prompt["frame"] for prompt in items) for items in real_prompt_sets)
+    return [(anchor, False), (anchor, True)]
 
 
 def propagate_masks(
@@ -384,6 +473,11 @@ def propagate_masks(
     window_overlap = min(window_size - 1, max(0, int(os.getenv("SAM_WINDOW_OVERLAP", "30"))))
     bidirectional = os.getenv("SAM_BIDIRECTIONAL", "true").lower() == "true"
     prompt_count = max(1, int(os.getenv("SAM_PROMPTS_PER_TRACK", "3")))
+    pad_compiled_batch = (
+        os.getenv("SAM_PAD_COMPILED_BATCH", "true").lower() == "true"
+        and os.getenv("SAM_VOS_OPTIMIZED", "true").lower() == "true"
+        and device.type == "cuda"
+    )
     masks: dict[int, dict[int, dict[str, Any]]] = {track_id: {} for track_id in track_detections}
     quality: dict[int, dict[int, float]] = {track_id: {} for track_id in track_detections}
     first = min(detections[0]["frame"] for detections in track_detections.values())
@@ -398,7 +492,16 @@ def propagate_masks(
         passes_per_batch = 2 if bidirectional else 1
         total_passes += passes_per_batch * ((active_count + object_batch - 1) // object_batch)
     completed_passes = 0
+    window_root = frame_paths[0].parent.parent / "sam-window-frames"
+    shutil.rmtree(window_root, ignore_errors=True)
+    window_root.mkdir()
     for window_start, window_end in windows:
+        window_dir = window_root / f"{window_start:06d}-{window_end:06d}"
+        window_dir.mkdir()
+        for local_index, frame_path in enumerate(
+            frame_paths[window_start : window_end + 1]
+        ):
+            (window_dir / f"{local_index:06d}.jpg").symlink_to(frame_path.resolve())
         active_ids = [
             track_id
             for track_id, detections in sorted(
@@ -411,7 +514,7 @@ def propagate_masks(
             batch_ids = active_ids[offset : offset + object_batch]
             with torch.inference_mode(), precision_context(device):
                 state = predictor.init_state(
-                    video_path=str(frame_paths[0].parent),
+                    video_path=str(window_dir),
                     offload_video_to_cpu=False,
                     offload_state_to_cpu=False,
                     async_loading_frames=False,
@@ -455,22 +558,46 @@ def propagate_masks(
                         )
                         predictor.add_new_points_or_box(
                             inference_state=state,
-                            frame_idx=int(prompt["frame"]),
+                            frame_idx=int(prompt["frame"]) - window_start,
                             obj_id=track_id,
                             box=box,
                             points=points,
                             labels=np.ones(2, dtype=np.int32),
                         )
 
-                directions = propagation_directions(prompts, bidirectional)
-                batch_start = min(
+                # Full VOS compile is shape-sensitive. Pad only the final
+                # object bucket so every compiled propagation sees exactly
+                # SAM_OBJECT_BATCH identities; dummy corner masks are never
+                # exported and do not overlap on-pitch people.
+                if pad_compiled_batch and len(batch_ids) < object_batch:
+                    for dummy_offset in range(object_batch - len(batch_ids)):
+                        dummy_id = -1 - offset - dummy_offset
+                        prompts[dummy_id] = [{"frame": window_start}]
+                        predictor.add_new_points_or_box(
+                            inference_state=state,
+                            frame_idx=0,
+                            obj_id=dummy_id,
+                            box=np.asarray([0, 0, 2, 2], dtype=np.float32),
+                            points=np.asarray([[1, 1]], dtype=np.float32),
+                            labels=np.ones(1, dtype=np.int32),
+                        )
+
+                directions = [
+                    (frame_index - window_start, reverse)
+                    for frame_index, reverse in propagation_directions(
+                        prompts, bidirectional
+                    )
+                ]
+                batch_start_global = min(
                     max(window_start, track_detections[track_id][0]["frame"])
                     for track_id in batch_ids
                 )
-                batch_end = max(
+                batch_end_global = max(
                     min(window_end, track_detections[track_id][-1]["frame"])
                     for track_id in batch_ids
                 )
+                batch_start = batch_start_global - window_start
+                batch_end = batch_end_global - window_start
                 for start_frame, reverse in directions:
                     max_frames = (
                         batch_end - start_frame + 1
@@ -483,9 +610,10 @@ def propagate_masks(
                         max_frame_num_to_track=max_frames,
                         reverse=reverse,
                     )
-                    for pass_step, (frame_index, object_ids, mask_logits) in enumerate(
+                    for pass_step, (local_frame_index, object_ids, mask_logits) in enumerate(
                         propagation, start=1
                     ):
+                        frame_index = int(local_frame_index) + window_start
                         if progress_callback:
                             progress_callback(
                                 (completed_passes + min(1.0, pass_step / max_frames))
@@ -496,7 +624,8 @@ def propagate_masks(
                         active = [
                             (position, int(object_id_value))
                             for position, object_id_value in enumerate(object_ids)
-                            if track_detections[int(object_id_value)][0]["frame"]
+                            if int(object_id_value) in track_detections
+                            and track_detections[int(object_id_value)][0]["frame"]
                             <= frame_index
                             <= track_detections[int(object_id_value)][-1]["frame"]
                         ]
@@ -526,8 +655,10 @@ def propagate_masks(
                                 quality[track_id][int(frame_index)] = score
                     completed_passes += 1
                 del state
+        shutil.rmtree(window_dir)
         if device.type == "cuda":
             torch.cuda.empty_cache()
+    shutil.rmtree(window_root)
     return masks
 
 
@@ -562,6 +693,15 @@ def roster_match(
             if player["team"] == team and int(player["squad_number"]) == number
         ),
         None,
+    )
+
+
+def has_configured_fixture(payload: dict[str, Any]) -> bool:
+    """Return false for the direct-upload generic demo context."""
+    return not (
+        str(payload.get("match_label") or "").strip().lower() == "unspecified match"
+        and str(payload.get("team_a") or "").strip().lower() == "team a"
+        and str(payload.get("team_b") or "").strip().lower() == "team b"
     )
 
 
@@ -681,6 +821,22 @@ def process(job_dir: Path) -> None:
         progress_callback=report_segment_progress,
     )
     stage_times["segment_seconds"] = time.perf_counter() - stage_started
+    maskless_track_ids = sorted(
+        track_id for track_id, track_masks in encoded_masks.items() if not track_masks
+    )
+    if maskless_track_ids:
+        track_detections = {
+            track_id: detections
+            for track_id, detections in track_detections.items()
+            if track_id not in maskless_track_ids
+        }
+        encoded_masks = {
+            track_id: track_masks
+            for track_id, track_masks in encoded_masks.items()
+            if track_id not in maskless_track_ids
+        }
+    if not track_detections:
+        raise RuntimeError("SAM produced no usable on-pitch person masks")
     del predictor
     if device.type == "cuda":
         import torch
@@ -695,38 +851,22 @@ def process(job_dir: Path) -> None:
         track_id: [] for track_id in track_detections
     }
     crop_index = 0
+    detections_per_frame: dict[int, list[tuple[int, dict[str, Any]]]] = {}
+    for track_id, detections in track_detections.items():
+        for detection in detections:
+            detections_per_frame.setdefault(int(detection["frame"]), []).append(
+                (track_id, detection)
+            )
     for frame_index, frame_path in enumerate(frame_paths):
         frame = cv2.imread(str(frame_path))
         calibration = calibrations.get(frame_index, {})
-        for track_id, masks in encoded_masks.items():
-            rle = masks.get(frame_index)
-            if not rle:
-                continue
-            mask = decode_mask(rle).astype(bool)
-            bbox = mask_bbox(mask)
-            foot = mask_foot_point(mask)
-            if bbox is None or foot is None:
-                continue
-            detection = detection_at(track_detections[track_id], frame_index)
-            display_bbox = [round(value, 2) for value in detection["bbox"]] if detection else list(bbox)
-            pitch_point = None
-            if calibration.get("valid"):
-                homography = np.asarray(calibration["homography"], dtype=np.float64).reshape(3, 3)
-                candidate = project_point(foot, homography)
-                if -1 <= candidate[0] <= 106 and -1 <= candidate[1] <= 69:
-                    pitch_point = candidate
-            mask_ys, mask_xs = np.where(mask)
-            sample = {
-                "frame": frame_index,
-                "time": round(frame_index / FPS, 3),
-                "bbox": display_bbox,
-                "foot": [round(foot[0], 2), round(foot[1], 2)],
-                "centroid": [round(float(mask_xs.mean()), 2), round(float(mask_ys.mean()), 2)],
-                "pitch": list(pitch_point) if pitch_point else None,
-                "area": int(mask.sum()),
-            }
+        for track_id, detection in detections_per_frame.get(frame_index, []):
+            rle = encoded_masks[track_id].get(frame_index)
+            mask = decode_mask(rle).astype(bool) if rle else None
+            sample = motion_sample(frame_index, detection, calibration, mask)
             samples[track_id].append(sample)
-            if frame_index % 2 == 0:
+            bbox = mask_bbox(mask) if mask is not None else None
+            if frame_index % 2 == 0 and mask is not None and bbox is not None:
                 jersey = dominant_jersey_bgr(frame, mask, bbox)
                 if jersey:
                     colors[track_id].append(jersey)
@@ -740,6 +880,7 @@ def process(job_dir: Path) -> None:
     stage_times["mask_postprocess_seconds"] = time.perf_counter() - mask_postprocess_started
 
     identity_started = time.perf_counter()
+    configured_fixture = has_configured_fixture(payload)
     if payload.get("analysis_mode") == "auto_all":
         role_candidates = []
         provisional_teams: dict[int, str] = {}
@@ -749,8 +890,12 @@ def process(job_dir: Path) -> None:
                 if track_colors
                 else None
             )
-            provisional_team = classify_team(
-                average, payload["team_colors"], payload["team_a"], payload["team_b"]
+            provisional_team = (
+                classify_team(
+                    average, payload["team_colors"], payload["team_a"], payload["team_b"]
+                )
+                if configured_fixture
+                else "unknown"
             )
             provisional_teams[track_id] = provisional_team
             if (
@@ -854,9 +999,13 @@ def process(job_dir: Path) -> None:
             if colors[track_id]
             else None
         )
-        team = classify_team(average_color, references, payload["team_a"], payload["team_b"])
+        team = (
+            classify_team(average_color, references, payload["team_a"], payload["team_b"])
+            if configured_fixture
+            else "unknown"
+        )
         role = metadata["role"]
-        if team == "unknown" and role == "player":
+        if configured_fixture and team == "unknown" and role == "player":
             team = classify_team(
                 average_color,
                 references,
@@ -875,11 +1024,22 @@ def process(job_dir: Path) -> None:
         if match and str(match.get("position", "")).upper() in {"GK", "GOALKEEPER"}:
             role = "goalkeeper"
         pitch_points = [tuple(sample["pitch"]) if sample["pitch"] else None for sample in track_samples]
+        smoothed_points = smooth_metric_positions(pitch_points, FPS)
         speeds = speed_series(pitch_points, FPS)
         trajectory = [
-            {**sample, "speed_kmh": speeds[index]} for index, sample in enumerate(track_samples)
+            {
+                **sample,
+                "smoothed_pitch": list(smoothed_points[index]) if smoothed_points[index] else None,
+                "speed_kmh": speeds[index],
+            }
+            for index, sample in enumerate(track_samples)
         ]
         valid_speeds = [speed for speed in speeds if speed is not None]
+        metric_duration = (
+            (track_samples[-1]["frame"] - track_samples[0]["frame"]) / FPS
+            if track_samples
+            else 0
+        )
         tracks.append(
             {
                 "object_id": track_id,
@@ -909,6 +1069,10 @@ def process(job_dir: Path) -> None:
                 "identity_confidence": identity_confidence,
                 "metrics": {
                     **overlaps[track_id],
+                    "mask_model_tier": os.getenv("SAM_MODEL_TIER", "large"),
+                    "mask_refinement_status": "base_ready"
+                    if os.getenv("SAM_MODEL_TIER", "large") == "base_plus"
+                    else "large_ready",
                     "automatic_identity": {
                         "team": team,
                         "jersey_number": number,
@@ -917,8 +1081,18 @@ def process(job_dir: Path) -> None:
                     },
                     "distance_m": traveled_distance(pitch_points, FPS),
                     "average_speed_kmh": round(float(np.mean(valid_speeds)), 2) if valid_speeds else None,
-                    "max_speed_kmh": max(valid_speeds, default=None),
+                    "max_speed_kmh": (
+                        max(valid_speeds, default=None) if metric_duration >= 1.0 else None
+                    ),
                     "metric_calibration_available": bool(valid_speeds),
+                    "mask_coverage_ratio": round(
+                        sum(
+                            int(sample["frame"]) in encoded_masks[track_id]
+                            for sample in track_samples
+                        )
+                        / max(1, len(track_samples)),
+                        3,
+                    ),
                 },
             }
         )
@@ -956,15 +1130,23 @@ def process(job_dir: Path) -> None:
         "objects": len(tracks),
         "raw_tracker_ids": raw_track_count,
         "accepted_tracker_ids": len(track_detections),
+        "maskless_tracks_rejected": len(maskless_track_ids),
+        "fixture_identity_configured": configured_fixture,
         "elapsed_seconds": round(elapsed, 2),
         "effective_fps": round(len(frame_paths) / elapsed, 2),
         **{key: round(value, 2) for key, value in stage_times.items()},
         "precision": "bfloat16" if device.type == "cuda" else "float32",
         "sam_object_batch": int(os.getenv("SAM_OBJECT_BATCH", "8")),
+        "sam_model_tier": os.getenv("SAM_MODEL_TIER", "large"),
+        "sam_window_frames": int(os.getenv("SAM_WINDOW_FRAMES", "180")),
+        "sam_window_overlap": int(os.getenv("SAM_WINDOW_OVERLAP", "30")),
+        "sam_vos_optimized": os.getenv("SAM_VOS_OPTIMIZED", "true").lower() == "true",
+        "sam_pad_compiled_batch": os.getenv("SAM_PAD_COMPILED_BATCH", "true").lower() == "true",
         "sam_bidirectional": os.getenv("SAM_BIDIRECTIONAL", "true").lower() == "true",
         "sam_prompts_per_track": int(os.getenv("SAM_PROMPTS_PER_TRACK", "3")),
-        "gsr_analysis_fps": float(os.getenv("GSR_ANALYSIS_FPS", str(FPS))),
-        "gsr_combined": os.getenv("GSR_COMBINED", "false").lower() == "true",
+        "detector_tracker_fps": float(os.getenv("DETECTOR_TRACKER_FPS", "10")),
+        "reid_appearance_fps": float(os.getenv("REID_APPEARANCE_FPS", "5")),
+        "calibration_fps": float(os.getenv("CALIBRATION_FPS", "5")),
         "role_model_enabled": os.getenv("ROLE_MODEL_ENABLED", "false").lower() == "true",
         "gsr_concat_tracklets": os.getenv("GSR_CONCAT_TRACKLETS", "false").lower() == "true",
         "sam_min_detection_iou": float(os.getenv("SAM_MIN_DETECTION_IOU", "0.1")),
@@ -975,6 +1157,11 @@ def process(job_dir: Path) -> None:
         "gpu_peak_reserved_mb": gpu_peak_reserved_mb,
         "occlusion_events": sum(track["metrics"]["occlusion_count"] for track in tracks),
         "ids_retained": sum(bool(track["metrics"]["id_retained"]) for track in tracks),
+        "active_object_frames": sum(
+            int(track["last_frame"]) - int(track["first_frame"]) + 1 for track in tracks
+        ),
+        "dense_object_frames": len(frame_paths) * len(tracks),
+        "field_association": game_state.get("association_metrics", {}),
         **tracking_metrics,
         "calibration_valid_rate": round(
             sum(item["valid"] for item in calibrations.values()) / max(1, len(calibrations)), 3

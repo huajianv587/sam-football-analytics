@@ -43,7 +43,10 @@ modules:
     batch_size: 64
     cfg:
       path_to_checkpoint: "${model_dir}/yolo/yolo_v8x6_finetuned.pt"
-      min_confidence: 0.20
+      # ByteTrack-style second-stage association needs the detector tail.
+      # Only >=0.65 detections may create a new identity; 0.05-0.65 can
+      # recover an existing one through a short occlusion.
+      min_confidence: 0.05
   reid:
     batch_size: 128
   track:

@@ -51,11 +51,11 @@ def test_forward_propagation_starts_at_earliest_prompt():
     assert propagation_directions(prompts, bidirectional=False) == [(3, False)]
 
 
-def test_bidirectional_propagation_spans_prompt_range():
+def test_bidirectional_propagation_partitions_window_at_common_anchor():
     prompts = {1: [{"frame": 8}], 2: [{"frame": 3}, {"frame": 20}]}
     assert propagation_directions(prompts, bidirectional=True) == [
-        (3, False),
-        (20, True),
+        (8, False),
+        (8, True),
     ]
 
 

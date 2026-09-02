@@ -188,8 +188,8 @@ def select_prompt_detections(
 def track_windows(
     first_frame: int,
     last_frame: int,
-    window_size: int = 180,
-    overlap: int = 30,
+    window_size: int = 90,
+    overlap: int = 15,
 ) -> list[tuple[int, int]]:
     if first_frame > last_frame:
         return []

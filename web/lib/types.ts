@@ -41,6 +41,7 @@ export type TrajectoryPoint = {
   bbox: [number, number, number, number];
   foot: [number, number];
   pitch: [number, number] | null;
+  smoothed_pitch?: [number, number] | null;
   area: number;
   speed_kmh: number | null;
 };
@@ -76,12 +77,16 @@ export type Track = {
     average_speed_kmh: number | null;
     max_speed_kmh: number | null;
     metric_calibration_available: boolean;
+    mask_coverage_ratio?: number;
     occlusion_count: number;
     occlusion_frames: number[];
     area_recovery_ratio: number;
     recovery_frames: number | null;
     max_centroid_jump_px: number;
     id_retained: boolean;
+    mask_model_tier?: "base_plus" | "large";
+    mask_refinement_status?: "base_ready" | "queued" | "running" | "large_ready" | "failed";
+    mask_refinement_error?: string | null;
   };
 };
 
@@ -104,6 +109,7 @@ export type TrackMaskManifest = {
   height: number;
   first_frame: number;
   last_frame: number;
+  model_tier?: "base_plus" | "large";
   frames: Array<{ index: number; rle: RleMask }>;
 };
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { decodeRleCrop, smallestTrackAt } from "@/lib/masks";
+import { decodeRleCrop, nearestFrameValue, projectMaskCrop, smallestTrackAt } from "@/lib/masks";
 import type { Track, TrackMaskManifest } from "@/lib/types";
 
 const COLORS = [[184, 255, 98], [117, 216, 255], [255, 189, 102], [206, 134, 255], [255, 123, 115], [80, 227, 178]];
@@ -51,9 +51,9 @@ export function MaskVideoPlayer({
     const context = canvas?.getContext("2d");
     if (!canvas || !context) return;
     context.clearRect(0, 0, canvas.width, canvas.height);
-    const rle = selectedId !== null ? maskByFrame.get(frameIndex) : undefined;
-    if (showMasks && rle) {
-      const mask = decodeRleCrop(rle);
+    const maskFrame = selectedId !== null ? nearestFrameValue(maskByFrame, frameIndex) : null;
+    if (showMasks && maskFrame) {
+      const mask = decodeRleCrop(maskFrame.value);
       const image = context.createImageData(mask.width, mask.height);
       const color = COLORS[Math.abs((selectedId ?? 1) - 1) % COLORS.length];
       for (let pixel = 0; pixel < mask.pixels.length; pixel += 1) {
@@ -64,7 +64,15 @@ export function MaskVideoPlayer({
         image.data[offset + 2] = color[2];
         image.data[offset + 3] = 120;
       }
-      context.putImageData(image, mask.x, mask.y);
+      const offscreen = document.createElement("canvas");
+      offscreen.width = mask.width;
+      offscreen.height = mask.height;
+      offscreen.getContext("2d")?.putImageData(image, 0, 0);
+      const selectedTrack = selectedId === null ? undefined : trackMap.get(selectedId);
+      const sourceBox = (selectedTrack?.detections ?? selectedTrack?.trajectory)?.find((point) => point.frame === maskFrame.frame)?.bbox;
+      const targetBox = (selectedTrack?.detections ?? selectedTrack?.trajectory)?.find((point) => point.frame === frameIndex)?.bbox;
+      const projected = projectMaskCrop(mask, sourceBox, targetBox);
+      context.drawImage(offscreen, projected.x, projected.y, projected.width, projected.height);
     }
 
     if (showTrajectory && selectedId !== null) {

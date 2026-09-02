@@ -82,3 +82,79 @@ def test_mask_upload_ignores_macos_appledouble_files(tmp_path) -> None:
         "3.json.gz",
         "21.json.gz",
     ]
+
+
+def test_direct_upload_defaults_to_generic_fixture_without_login(monkeypatch) -> None:
+    import app.main as api
+
+    captured = {}
+    project_id = "00000000-0000-4000-8000-000000000099"
+
+    class FakeGateway:
+        def create_project(self, values):
+            captured["project"] = values
+            return {"id": project_id}
+
+        def upload_video(self, path, content):
+            captured["upload"] = (path, content)
+
+        def update_project(self, requested_project, values):
+            captured["updated"] = (requested_project, values)
+
+    class FakeRunner:
+        gateway = FakeGateway()
+
+        async def submit(self, request, owner_id):
+            captured["request"] = request
+            return {
+                "project_id": project_id,
+                "state": "queued",
+                "stage": "queued",
+                "progress": 2,
+                "track_count": 0,
+            }
+
+    monkeypatch.setattr(api, "_runner", FakeRunner())
+    response = TestClient(app).post(
+        "/v1/offline/jobs",
+        files={"video": ("random.mp4", b"small mp4 payload", "video/mp4")},
+    )
+    assert response.status_code == 202
+    assert captured["project"]["match_label"] == "Unspecified Match"
+    assert captured["project"]["team_a"] == "Team A"
+    assert captured["project"]["team_b"] == "Team B"
+    assert captured["request"].analysis_mode == "auto_all"
+
+
+def test_selected_track_can_submit_and_poll_large_refinement(monkeypatch) -> None:
+    import app.main as api
+
+    project_id = "00000000-0000-4000-8000-000000000001"
+
+    class FakeRunner:
+        async def submit_refinement(self, requested_project, object_id, owner_id):
+            assert requested_project == project_id
+            assert object_id == 7
+            assert owner_id == "00000000-0000-4000-8000-000000000001"
+            return {
+                "project_id": project_id,
+                "object_id": 7,
+                "state": "queued",
+            }
+
+        def refinement_status(self, requested_project, object_id, owner_id):
+            return {
+                "project_id": requested_project,
+                "object_id": object_id,
+                "state": "large_ready",
+                "mask_url": "https://storage.test/refined-mask",
+            }
+
+    monkeypatch.setattr(api, "_runner", FakeRunner())
+    client = TestClient(app)
+    submitted = client.post(f"/v1/projects/{project_id}/tracks/7/refine")
+    assert submitted.status_code == 202
+    assert submitted.json()["state"] == "queued"
+    completed = client.get(f"/v1/projects/{project_id}/tracks/7/refine")
+    assert completed.status_code == 200
+    assert completed.json()["mask_url"] == "https://storage.test/refined-mask"
