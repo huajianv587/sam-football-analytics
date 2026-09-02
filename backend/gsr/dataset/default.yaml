@@ -1,0 +1,20 @@
+dataset_path: ${data_dir}
+nvid: -1
+nframes: -1
+eval_set: val
+vids_dict:
+  train: []
+  val: []
+  test: []
+track_eval:
+  dataset_class: MotChallenge2DBox
+  BENCHMARK: MotChallenge2DBox
+  GT_FOLDER: eval/gt
+  GT_LOC_FORMAT: "{gt_folder}/{seq}.txt"
+  TRACKERS_FOLDER: eval/pred
+  TRACKER_SUB_FOLDER: ""
+  OUTPUT_FOLDER: eval/results
+  OUTPUT_SUB_FOLDER: ""
+  SPLIT_TO_EVAL: ${dataset.eval_set}
+  PRINT_CONFIG: false
+  DO_PREPROC: false

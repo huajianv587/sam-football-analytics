@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from worker.analytics import (
     bbox_touches_edge,
@@ -32,19 +33,39 @@ def test_homography_maps_video_corners_to_pitch() -> None:
 def test_speed_and_distance_use_metric_coordinates() -> None:
     points = [(0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0)]
     speeds = speed_series(points, fps=1)
+    assert speeds[0] is None
     assert speeds[-1] == 3.6
     assert traveled_distance(points) == 4.0
+
+
+def test_speed_is_missing_when_metric_calibration_is_invalid() -> None:
+    speeds = speed_series([(0.0, 0.0), None, (2.0, 0.0), (3.0, 0.0)], fps=1)
+    assert speeds[1:3] == [None, None]
+    assert speeds[3] == 3.6
 
 
 def test_ocr_vote_uses_accumulated_confidence() -> None:
     number, confidence = ocr_vote([("10", 0.7), ("10", 0.6), ("18", 0.9), ("A", 1.0)])
     assert number == 10
-    assert confidence == 1.3
+    assert confidence == 0.65
+
+
+def test_impossible_metric_jump_is_missing_and_not_added_to_distance() -> None:
+    points = [(0.0, 0.0), (10.0, 0.0), (10.5, 0.0)]
+    assert speed_series(points, fps=15)[1] is None
+    assert traveled_distance(points, fps=15) == 0.5
+
+
+def test_metric_position_filter_rejects_frame_to_frame_calibration_jitter() -> None:
+    points = [(index / 15 + (0.35 if index % 2 else -0.35), 0.0) for index in range(30)]
+    speeds = [speed for speed in speed_series(points, fps=15) if speed is not None]
+    assert np.median(speeds) == pytest.approx(3.6, abs=0.4)
 
 
 def test_jersey_color_uses_nearest_lab_reference() -> None:
     references = {"team_a": [220, 30, 40], "team_b": [120, 200, 235], "referee": [30, 32, 36]}
     assert classify_team((40, 30, 220), references, "Spain", "Argentina") == "Spain"
+    assert classify_team((20, 220, 20), references, "Spain", "Argentina") == "unknown"
 
 
 def test_occlusion_reports_recovery_and_centroid_jump() -> None:

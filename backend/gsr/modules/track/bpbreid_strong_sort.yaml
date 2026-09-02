@@ -1,0 +1,21 @@
+_target_: tracklab.wrappers.BPBReIDStrongSORT
+
+cfg:
+  ecc: false
+  ema_alpha: 0.9
+  mc_lambda: 0.995
+  max_dist: 0.5
+  motion_criterium: iou
+  max_iou_distance: 0.8
+  max_oks_distance: 0.7
+  max_age: 300
+  n_init: 0
+  nn_budget: 100
+  min_bbox_confidence: 0.0
+  only_position_for_kf_gating: false
+  max_kalman_prediction_without_update: 7
+  matching_strategy: strong_sort_matching
+  gating_thres_factor: 1
+  w_kfgd: 1
+  w_reid: 1
+  w_st: 1

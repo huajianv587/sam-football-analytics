@@ -5,6 +5,8 @@ from typing import Any
 import cv2
 import numpy as np
 
+MAX_PLAYER_SPEED_KMH = 50.0
+
 
 def compute_homography(
     pairs: Sequence[dict[str, Sequence[float]]], width: int, height: int
@@ -23,31 +25,69 @@ def project_point(point: tuple[float, float], homography: np.ndarray) -> tuple[f
     return round(float(target[0]), 3), round(float(target[1]), 3)
 
 
-def speed_series(points: Sequence[tuple[float, float] | None], fps: float) -> list[float]:
-    raw = np.zeros(len(points), dtype=np.float64)
-    for index in range(1, len(points)):
-        if points[index] is None or points[index - 1] is None:
-            raw[index] = raw[index - 1]
-            continue
-        raw[index] = np.linalg.norm(np.subtract(points[index], points[index - 1])) * fps * 3.6
+def speed_series(points: Sequence[tuple[float, float] | None], fps: float) -> list[float | None]:
+    positions = np.full((len(points), 2), np.nan, dtype=np.float64)
+    for index, point in enumerate(points):
+        if point is not None:
+            positions[index] = point
 
-    median = raw.copy()
+    lag = 1
+    if len(points) >= 10:
+        lag = 5
+        filtered = np.full_like(positions, np.nan)
+        for index, point in enumerate(points):
+            if point is None:
+                continue
+            window = positions[max(0, index - 2) : min(len(points), index + 3)]
+            valid = window[~np.isnan(window).any(axis=1)]
+            if len(valid):
+                filtered[index] = np.median(valid, axis=0)
+        previous: np.ndarray | None = None
+        for index, point in enumerate(filtered):
+            if np.isnan(point).any():
+                previous = None
+                continue
+            filtered[index] = point if previous is None else 0.35 * point + 0.65 * previous
+            previous = filtered[index]
+        positions = filtered
+
+    raw = np.full(len(points), np.nan, dtype=np.float64)
+    for index in range(lag, len(points)):
+        if any(point is None for point in points[index - lag : index + 1]):
+            continue
+        speed = np.linalg.norm(positions[index] - positions[index - lag]) * fps / lag * 3.6
+        if speed <= MAX_PLAYER_SPEED_KMH:
+            raw[index] = speed
+
+    median = np.full_like(raw, np.nan)
     for index in range(len(raw)):
         window = raw[max(0, index - 2) : min(len(raw), index + 3)]
-        median[index] = np.median(window)
+        valid = window[~np.isnan(window)]
+        if not np.isnan(raw[index]) and len(valid):
+            median[index] = np.median(valid)
 
-    smoothed = np.zeros_like(median)
+    smoothed = np.full_like(median, np.nan)
     alpha = 0.35
+    previous: float | None = None
     for index, value in enumerate(median):
-        smoothed[index] = value if index == 0 else alpha * value + (1 - alpha) * smoothed[index - 1]
-    return [round(float(value), 2) for value in smoothed]
+        if np.isnan(value):
+            previous = None
+            continue
+        smoothed[index] = value if previous is None else alpha * value + (1 - alpha) * previous
+        previous = float(smoothed[index])
+    return [None if np.isnan(value) else round(float(value), 2) for value in smoothed]
 
 
-def traveled_distance(points: Sequence[tuple[float, float] | None]) -> float:
+def traveled_distance(points: Sequence[tuple[float, float] | None], fps: float | None = None) -> float:
+    if fps is not None:
+        speeds = [speed for speed in speed_series(points, fps) if speed is not None]
+        return round(sum(speeds) / 3.6 / fps, 2)
     total = 0.0
     for previous, current in zip(points, points[1:]):
         if previous is not None and current is not None:
-            total += float(np.linalg.norm(np.subtract(current, previous)))
+            distance = float(np.linalg.norm(np.subtract(current, previous)))
+            if fps is None or distance * fps * 3.6 <= MAX_PLAYER_SPEED_KMH:
+                total += distance
     return round(total, 2)
 
 
@@ -72,6 +112,7 @@ def classify_team(
     references_rgb: dict[str, Sequence[int]],
     team_a: str,
     team_b: str,
+    max_lab_distance: float = 45.0,
 ) -> str:
     if bgr is None:
         return "unknown"
@@ -82,19 +123,22 @@ def classify_team(
         ref_bgr = tuple(reversed(rgb))
         ref = cv2.cvtColor(np.uint8([[ref_bgr]]), cv2.COLOR_BGR2LAB)[0, 0].astype(float)
         distances[key] = float(np.linalg.norm(sample - ref))
-    return labels[min(distances, key=distances.get)]
+    closest = min(distances, key=distances.get)
+    return labels[closest] if distances[closest] <= max_lab_distance else "unknown"
 
 
 def ocr_vote(candidates: Sequence[tuple[str, float]]) -> tuple[int | None, float]:
     scores: Counter[str] = Counter()
+    counts: Counter[str] = Counter()
     for text, confidence in candidates:
         digits = "".join(character for character in text if character.isdigit())
         if digits and 0 < int(digits) <= 99:
             scores[digits] += float(confidence)
+            counts[digits] += 1
     if not scores:
         return None, 0.0
     number, score = scores.most_common(1)[0]
-    return int(number), round(score, 3)
+    return int(number), round(min(1.0, score / counts[number]), 3)
 
 
 def bbox_iou(first: Sequence[int], second: Sequence[int]) -> float:
@@ -137,7 +181,7 @@ def occlusion_metrics(
     final_frame = max(all_frames, default=0)
     for object_id, track in samples.items():
         areas = [sample["area"] for sample in track]
-        baseline = float(np.median(areas[: min(5, len(areas))])) if areas else 1.0
+        baseline = float(np.median(areas)) if areas else 1.0
         area_drop_frames = [sample["frame"] for sample in track if sample["area"] < baseline * 0.6]
         occluded = sorted(set(events[object_id]) | set(area_drop_frames))
         groups = sum(index == 0 or frame > occluded[index - 1] + 1 for index, frame in enumerate(occluded))

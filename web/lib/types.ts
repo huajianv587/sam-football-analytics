@@ -22,6 +22,10 @@ export type Project = {
   mask_manifest_path: string | null;
   foreground_video_path: string | null;
   metrics_path: string | null;
+  calibration_path: string | null;
+  analysis_mode: "manual_sam" | "auto_all";
+  stage: string;
+  progress: number;
   prompts: PromptBox[];
   calibration: CalibrationPair[];
   slurm_job_id: string | null;
@@ -36,27 +40,42 @@ export type TrajectoryPoint = {
   time: number;
   bbox: [number, number, number, number];
   foot: [number, number];
-  pitch: [number, number];
+  pitch: [number, number] | null;
   area: number;
-  speed_kmh: number;
+  speed_kmh: number | null;
+};
+
+export type DetectionPoint = {
+  frame: number;
+  time: number;
+  bbox: [number, number, number, number];
 };
 
 export type Track = {
   id: string;
   project_id: string;
   object_id: number;
-  role: "player" | "referee";
+  role: "player" | "goalkeeper" | "referee";
   team: string;
   jersey_number: number | null;
   player_name: string | null;
   dominant_color: [number, number, number] | null;
+  detections?: DetectionPoint[];
   trajectory: TrajectoryPoint[];
-  speed_series: number[];
+  speed_series: Array<number | null>;
+  mask_path: string | null;
+  first_frame: number | null;
+  last_frame: number | null;
+  detector_confidence: number | null;
+  auto_roster_id: number | null;
+  roster_id: number | null;
+  identity_source: "automatic" | "manual" | "unidentified";
+  identity_confidence: number;
   metrics: {
     distance_m: number;
-    average_speed_kmh: number;
-    max_speed_kmh: number;
-    ocr_confidence: number;
+    average_speed_kmh: number | null;
+    max_speed_kmh: number | null;
+    metric_calibration_available: boolean;
     occlusion_count: number;
     occlusion_frames: number[];
     area_recovery_ratio: number;
@@ -66,10 +85,32 @@ export type Track = {
   };
 };
 
-export type RleMask = { size: [number, number]; counts: number[] };
+export type RleMask = {
+  size: [number, number];
+  counts: number[];
+  bbox?: [number, number, number, number];
+};
 export type MaskManifest = {
   fps: number;
   width: number;
   height: number;
   frames: Array<{ index: number; objects: Record<string, RleMask> }>;
+};
+
+export type TrackMaskManifest = {
+  track_id: number;
+  fps: number;
+  width: number;
+  height: number;
+  first_frame: number;
+  last_frame: number;
+  frames: Array<{ index: number; rle: RleMask }>;
+};
+
+export type RosterPlayer = {
+  id: number;
+  team: string;
+  squad_number: number;
+  player_name: string;
+  position: string;
 };

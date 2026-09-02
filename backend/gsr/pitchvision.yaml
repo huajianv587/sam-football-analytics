@@ -1,0 +1,83 @@
+defaults:
+  - dataset: external_video
+  - eval: gs_hota
+  - engine: offline
+  - state: save
+  - visualization: gamestate
+  - modules/bbox_detector: yolov8_person
+  - modules/reid: prtreid
+  - modules/track: bpbreid_strong_sort
+  - modules/concat_tracklets_by_reid: concat_tracklets_by_reid
+  - modules/pitch: pnlcalib
+  - modules/calibration: pnlcalib
+  - modules/jersey_number_detect: easyocr
+  - _self_
+
+pipeline:
+  - bbox_detector
+  - reid
+  - track
+  - pitch
+  - calibration
+  - jersey_number_detect
+
+experiment_name: pitchvision
+experiment_subname: offline
+project_dir: "${oc.env:GSR_PROJECT_DIR}"
+data_dir: "${project_dir}/datasets"
+model_dir: "${project_dir}/pretrained_models"
+num_cores: ${oc.decode:${oc.env:PITCHVISION_CORES,10}}
+use_wandb: false
+use_rich: false
+test_tracking: true
+eval_tracking: false
+print_config: false
+
+dataset:
+  video_path: "${oc.env:PITCHVISION_VIDEO}"
+  eval_set: val
+  nvid: -1
+
+modules:
+  bbox_detector:
+    batch_size: 64
+    cfg:
+      path_to_checkpoint: "${model_dir}/yolo/yolo_v8x6_finetuned.pt"
+      min_confidence: 0.20
+  reid:
+    batch_size: 128
+  track:
+    cfg:
+      max_age: 14
+      max_dist: 0.5
+      max_iou_distance: 0.8
+      mc_lambda: 0.995
+      ecc: false
+  concat_tracklets_by_reid:
+    threshold: 0.05
+  pitch:
+    batch_size: 1
+    image_width: ${oc.decode:${oc.env:PITCHVISION_WIDTH}}
+    image_height: ${oc.decode:${oc.env:PITCHVISION_HEIGHT}}
+  calibration:
+    batch_size: 1
+    image_width: ${oc.decode:${oc.env:PITCHVISION_WIDTH}}
+    image_height: ${oc.decode:${oc.env:PITCHVISION_HEIGHT}}
+    use_prev_homography: false
+  jersey_number_detect:
+    batch_size: 16
+
+state:
+  save_file: "${oc.env:PITCHVISION_STATE}"
+  load_file: null
+
+visualization:
+  cfg:
+    save_videos: false
+
+hydra:
+  output_subdir: null
+  job:
+    chdir: false
+  run:
+    dir: "${oc.env:PITCHVISION_RUN_DIR}"

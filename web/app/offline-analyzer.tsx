@@ -2,89 +2,134 @@
 
 import { Camera, CheckCircle2, CloudUpload, Plane, Play, Radio, RotateCcw } from "lucide-react";
 import { useEffect, useState } from "react";
-import { BoxAnnotator } from "@/app/projects/[id]/setup/box-annotator";
-import { CalibrationPanel } from "@/app/projects/[id]/setup/calibration-panel";
-import type { CalibrationPair, PromptBox } from "@/lib/types";
-import { MAX_VIDEO_BYTES } from "@/lib/upload";
 
-const QUICK_CALIBRATION: CalibrationPair[] = [
-  { video: [0, 0], pitch: [0, 0] },
-  { video: [1, 0], pitch: [105, 0] },
-  { video: [1, 1], pitch: [105, 68] },
-  { video: [0, 1], pitch: [0, 68] },
-];
+const MAX_VIDEO_BYTES = 50 * 1024 * 1024;
+const LAST_JOB_KEY = "pitchvision:last-job";
 
 type JobState = "idle" | "queued" | "running" | "completed" | "failed";
+
+const STAGE_LABELS: Record<string, string> = {
+  queued: "Queued",
+  normalize: "Normalize",
+  reconstruct: "Detect / Track / Calibrate",
+  detect: "Detect",
+  track: "Track",
+  calibrate: "Calibrate",
+  segment: "Segment",
+  identify: "Identify",
+  upload: "Upload",
+  completed: "Complete",
+  failed: "Failed",
+};
 
 export function OfflineAnalyzer() {
   const apiUrl = process.env.NEXT_PUBLIC_INFERENCE_API_URL ?? "http://127.0.0.1:8000";
   const [file, setFile] = useState<File | null>(null);
   const [videoUrl, setVideoUrl] = useState("");
-  const [boxes, setBoxes] = useState<PromptBox[]>([]);
-  const [pairs, setPairs] = useState<CalibrationPair[]>(QUICK_CALIBRATION);
   const [jobId, setJobId] = useState("");
   const [state, setState] = useState<JobState>("idle");
+  const [stage, setStage] = useState("queued");
   const [progress, setProgress] = useState(0);
+  const [trackCount, setTrackCount] = useState(0);
   const [message, setMessage] = useState("");
 
   useEffect(() => () => { if (videoUrl) URL.revokeObjectURL(videoUrl); }, [videoUrl]);
 
   useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const savedJob = window.localStorage.getItem(LAST_JOB_KEY);
+      if (savedJob) {
+        setJobId(savedJob);
+        setState("queued");
+        return;
+      }
+      fetch(`${apiUrl}/v1/offline/latest`)
+        .then((response) => response.ok ? response.json() : null)
+        .then((job) => {
+          if (!job) return;
+          window.localStorage.setItem(LAST_JOB_KEY, job.project_id);
+          setJobId(job.project_id);
+          setState(job.state);
+          setStage(job.stage);
+          setProgress(job.progress);
+          setTrackCount(job.track_count);
+          setMessage(job.message ?? "");
+        });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [apiUrl]);
+
+  useEffect(() => {
     if (!jobId || (state !== "queued" && state !== "running")) return;
-    const timer = window.setInterval(async () => {
+    async function refreshJob() {
       const response = await fetch(`${apiUrl}/v1/offline/jobs/${jobId}`);
       if (!response.ok) return;
       const job = await response.json();
       setState(job.state);
+      setStage(job.stage);
       setProgress(job.progress);
+      setTrackCount(job.track_count);
       setMessage(job.message ?? "");
-    }, 4000);
+    }
+    void refreshJob();
+    const timer = window.setInterval(refreshJob, 4000);
     return () => window.clearInterval(timer);
   }, [apiUrl, jobId, state]);
 
   async function chooseFile(nextFile: File | undefined) {
     if (!nextFile) return;
-    if (nextFile.type !== "video/mp4") return setMessage("The offline workflow currently accepts MP4 video only.");
+    if (nextFile.type !== "video/mp4") return setMessage("The offline workflow accepts MP4 video only.");
     if (nextFile.size > MAX_VIDEO_BYTES) return setMessage("Video size must be 50 MB or less.");
     const url = URL.createObjectURL(nextFile);
     const duration = await readDuration(url);
-    if (duration > 60) { URL.revokeObjectURL(url); return setMessage("The offline workflow supports clips up to 60 seconds."); }
+    if (duration > 60) {
+      URL.revokeObjectURL(url);
+      return setMessage("The offline workflow supports clips up to 60 seconds.");
+    }
     setFile(nextFile);
     setVideoUrl(url);
-    setBoxes([]);
-    setPairs(QUICK_CALIBRATION);
+    setJobId("");
+    setState("idle");
+    setProgress(0);
+    setTrackCount(0);
+    setMessage("");
+    window.localStorage.removeItem(LAST_JOB_KEY);
+  }
+
+  function reset() {
+    if (videoUrl) URL.revokeObjectURL(videoUrl);
+    setFile(null);
+    setVideoUrl("");
     setJobId("");
     setState("idle");
     setProgress(0);
     setMessage("");
   }
 
-  function reset() {
-    setFile(null);
-    setVideoUrl("");
-    setBoxes([]);
-    setPairs(QUICK_CALIBRATION);
-    setJobId("");
-    setState("idle");
-    setMessage("");
-  }
-
   async function analyze() {
-    if (!file || !boxes.length || pairs.length < 4) return;
+    if (!file) return;
     setState("queued");
-    setProgress(5);
+    setStage("upload");
+    setProgress(0);
     setMessage("");
-    const body = new FormData();
-    body.append("video", file);
-    body.append("prompts", JSON.stringify(boxes));
-    body.append("calibration", JSON.stringify(pairs));
-    body.append("title", file.name.replace(/\.mp4$/i, ""));
     try {
-      const response = await fetch(`${apiUrl}/v1/offline/jobs`, { method: "POST", body });
+      const form = new FormData();
+      form.set("video", file);
+      form.set("title", file.name.replace(/\.mp4$/i, ""));
+      form.set("match_label", "2026 FIFA World Cup Final");
+      form.set("team_a", "Spain");
+      form.set("team_b", "Argentina");
+      setProgress(5);
+      const response = await fetch(`${apiUrl}/v1/offline/jobs`, {
+        method: "POST",
+        body: form,
+      });
       const result = await response.json();
       if (!response.ok) throw new Error(result.detail ?? "Unable to submit the analysis job.");
       setJobId(result.project_id);
+      window.localStorage.setItem(LAST_JOB_KEY, result.project_id);
       setState(result.state);
+      setStage(result.stage);
       setProgress(result.progress);
     } catch (error) {
       setState("failed");
@@ -96,48 +141,32 @@ export function OfflineAnalyzer() {
   return (
     <div className="container offline-shell">
       <header className="offline-heading">
-        <div><span className="eyebrow">VIDEO INTELLIGENCE / OFFLINE PROCESSING</span><h1>Upload footage. Select players. Run analysis.</h1><p>Process continuous match footage now. Live streams, field cameras, and drone feeds connect in the next phase.</p></div>
-        <div className="source-modes" aria-label="Input sources">
-          <span className="source-mode active"><Play size={14} /> FILE</span>
-          <span className="source-mode"><Radio size={14} /> LIVE STREAM</span>
-          <span className="source-mode"><Camera size={14} /> FIELD CAMERA</span>
-          <span className="source-mode"><Plane size={14} /> DRONE FEED</span>
-        </div>
+        <div><span className="eyebrow">VIDEO INTELLIGENCE / OFFLINE PROCESSING</span><h1>Upload footage. Detect everyone. Inspect any player.</h1><p>Automatic detection, persistent IDs, pitch calibration, and SAM 2.1 masks — no manual annotation.</p></div>
+        <div className="source-modes" aria-label="Input sources"><span className="source-mode active"><Play size={14} /> FILE</span><span className="source-mode"><Radio size={14} /> LIVE STREAM</span><span className="source-mode"><Camera size={14} /> FIELD CAMERA</span><span className="source-mode"><Plane size={14} /> DRONE FEED</span></div>
       </header>
 
-      {!videoUrl ? (
+      {!videoUrl && !jobId ? (
         <section className="panel simple-upload">
-          <CloudUpload size={42} />
-          <h2>Select match footage</h2>
-          <p>H.264 MP4 · up to 60 seconds · 50 MB maximum · continuous shot</p>
+          <CloudUpload size={42} /><h2>Select match footage</h2><p>H.264 MP4 · up to 60 seconds · 50 MB maximum · continuous shot</p>
           <label className="button button-primary">SELECT VIDEO<input type="file" accept="video/mp4,.mp4" onChange={(event) => chooseFile(event.target.files?.[0])} /></label>
           {message && <p className="form-error">{message}</p>}
         </section>
-      ) : (
+      ) : videoUrl ? (
         <div className="simple-workspace">
-          <section className="panel annotation-panel">
-            <div className="panel-title"><div><h2>Select players on the first frame</h2><p className="muted micro">Draw one box per subject. SAM propagates masks and persistent IDs across the clip.</p></div><span>{boxes.length} SUBJECTS</span></div>
-            <BoxAnnotator videoUrl={videoUrl} boxes={boxes} onChange={setBoxes} />
-          </section>
-
-          <details className="panel calibration-details">
-            <summary>Metric calibration / optional</summary>
-            <p className="muted micro">Quick mode maps the frame corners to a standard pitch. Replace the four point pairs for accurate metric speed.</p>
-            <CalibrationPanel videoUrl={videoUrl} pairs={pairs} onChange={setPairs} />
-          </details>
-
+          <section className="panel result-video-panel"><div className="video-stage"><video src={videoUrl} controls playsInline /></div></section>
           <section className="panel action-bar">
-            <div>
-              <strong>{file?.name}</strong>
-              <span>{processing ? `A40 PROCESSING · ${progress}%` : state === "completed" ? "ANALYSIS COMPLETE · RESULTS SAVED" : state === "failed" ? message : boxes.length ? "READY TO ANALYZE" : "SELECT AT LEAST ONE PLAYER"}</span>
-              {processing && <div className="progress"><span style={{ width: `${progress}%` }} /></div>}
-            </div>
-            <div className="nav-actions">
-              <button className="button button-secondary" onClick={reset} disabled={processing}><RotateCcw size={15} /> REPLACE VIDEO</button>
-              <button className="button button-primary" onClick={analyze} disabled={!boxes.length || pairs.length < 4 || processing || state === "completed"}>{state === "completed" ? <CheckCircle2 size={16} /> : <Play size={16} />}{processing ? "ANALYZING…" : state === "completed" ? "COMPLETE" : "RUN OFFLINE ANALYSIS"}</button>
-            </div>
+            <div><strong>{file?.name}</strong><span>{processing ? `${STAGE_LABELS[stage] ?? stage} · ${progress}%${trackCount ? ` · ${trackCount} tracks` : ""}` : state === "completed" ? "ANALYSIS COMPLETE · RESULTS SAVED" : state === "failed" ? message : "READY · ALL PLAYERS WILL BE DETECTED AUTOMATICALLY"}</span>{processing && <div className="progress"><span style={{ width: `${progress}%` }} /></div>}</div>
+            <div className="nav-actions"><button className="button button-secondary" onClick={reset} disabled={processing}><RotateCcw size={15} /> REPLACE VIDEO</button>{state === "completed" ? <a className="button button-primary" href={`/projects/${jobId}/results`}><CheckCircle2 size={16} /> OPEN RESULTS</a> : <button className="button button-primary" onClick={analyze} disabled={processing}><Play size={16} />{processing ? "ANALYZING…" : "RUN AUTO ANALYSIS"}</button>}</div>
           </section>
         </div>
+      ) : (
+        <section className="panel simple-upload">
+          {state === "completed" ? <CheckCircle2 size={42} /> : <CloudUpload size={42} />}
+          <h2>{state === "completed" ? "Analysis complete" : state === "failed" ? "Analysis failed" : "Analysis in progress"}</h2>
+          <p>{state === "failed" ? message : `${STAGE_LABELS[stage] ?? stage} · ${progress}%${trackCount ? ` · ${trackCount} tracks` : ""}`}</p>
+          {(state === "queued" || state === "running") && <div className="progress" style={{ width: "min(520px, 100%)" }}><span style={{ width: `${progress}%` }} /></div>}
+          {state === "completed" ? <a className="button button-primary" href={`/projects/${jobId}/results`}><CheckCircle2 size={16} /> OPEN RESULTS</a> : <button className="button button-secondary" onClick={reset} disabled={state === "queued" || state === "running"}><RotateCcw size={15} /> SELECT ANOTHER VIDEO</button>}
+        </section>
       )}
     </div>
   );

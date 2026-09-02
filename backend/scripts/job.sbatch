@@ -3,8 +3,8 @@
 #SBATCH --partition=MGPU-TC2
 #SBATCH --qos=normal
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=24G
+#SBATCH --cpus-per-task=10
+#SBATCH --mem=30G
 #SBATCH --time=02:00:00
 #SBATCH --output=slurm-%j.out
 #SBATCH --error=slurm-%j.err
@@ -12,7 +12,8 @@
 set -euo pipefail
 
 JOB_DIR="$1"
-RUNTIME_DIR="${SAM2_RUNTIME_DIR:-$(dirname "$(dirname "$JOB_DIR")")/runtime}"
+REMOTE_ROOT="$(dirname "$(dirname "$(dirname "$JOB_DIR")")")"
+RUNTIME_DIR="${SAM2_RUNTIME_DIR:-$REMOTE_ROOT/runtime}"
 exec >"$JOB_DIR/job.log" 2>&1
 
 module load anaconda/25.5.1 cuda/12.8.0
@@ -24,6 +25,23 @@ export EASYOCR_MODULE_PATH="$RUNTIME_DIR/easyocr"
 export TRITON_CACHE_DIR="$RUNTIME_DIR/triton-cache"
 export TORCHINDUCTOR_CACHE_DIR="$RUNTIME_DIR/torchinductor-cache"
 export PYTHONUNBUFFERED=1
-mkdir -p "$TRITON_CACHE_DIR" "$TORCHINDUCTOR_CACHE_DIR"
+export GSR_RUNTIME_DIR="${GSR_RUNTIME_DIR:-$REMOTE_ROOT/gsr-runtime}"
+export PITCHVISION_CORES="${SLURM_CPUS_PER_TASK:-10}"
+export XDG_CACHE_HOME="$GSR_RUNTIME_DIR/cache"
+export MPLCONFIGDIR="$GSR_RUNTIME_DIR/cache/matplotlib"
+export YOLO_CONFIG_DIR="$GSR_RUNTIME_DIR/cache/ultralytics"
+export HF_HOME="$GSR_RUNTIME_DIR/cache/huggingface"
+export SAM_OBJECT_BATCH="${SAM_OBJECT_BATCH:-64}"
+export SAM_MIN_DETECTION_IOU="${SAM_MIN_DETECTION_IOU:-0.1}"
+export SAM_WINDOW_FRAMES="${SAM_WINDOW_FRAMES:-450}"
+export SAM_WINDOW_OVERLAP="${SAM_WINDOW_OVERLAP:-30}"
+export SAM_VOS_OPTIMIZED="${SAM_VOS_OPTIMIZED:-false}"
+export SAM_BIDIRECTIONAL="${SAM_BIDIRECTIONAL:-false}"
+export SAM_PROMPTS_PER_TRACK="${SAM_PROMPTS_PER_TRACK:-2}"
+export GSR_ANALYSIS_FPS="${GSR_ANALYSIS_FPS:-5}"
+export GSR_COMBINED="${GSR_COMBINED:-true}"
+export GSR_CONCAT_TRACKLETS="${GSR_CONCAT_TRACKLETS:-false}"
+export ROLE_MODEL_ENABLED="${ROLE_MODEL_ENABLED:-false}"
+mkdir -p "$TRITON_CACHE_DIR" "$TORCHINDUCTOR_CACHE_DIR" "$MPLCONFIGDIR" "$YOLO_CONFIG_DIR" "$HF_HOME"
 
 conda run --no-capture-output -p "$RUNTIME_DIR/env" python -u -m worker.main "$JOB_DIR"

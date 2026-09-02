@@ -28,6 +28,7 @@ export function ProjectsDashboard({ configured, userId, initialProjects }: { con
       match_label: "2026 FIFA World Cup Final",
       team_a: teamA,
       team_b: teamB,
+      analysis_mode: "auto_all",
     }).select("id").single();
     setSaving(false);
     if (insertError) return setError(insertError.message);
@@ -79,7 +80,7 @@ export function ProjectsDashboard({ configured, userId, initialProjects }: { con
             ))}
           </div>
         ) : (
-          <div className="panel empty-state"><FolderPlus size={34} /><h2>No analysis projects yet</h2><p>Create a project, upload a continuous match clip, and select players on the first frame.</p><button className="button button-primary" disabled={!configured} onClick={() => setShowForm(true)}>CREATE FIRST PROJECT</button></div>
+          <div className="panel empty-state"><FolderPlus size={34} /><h2>No analysis projects yet</h2><p>Create a project and upload a continuous match clip. Players, officials, IDs, and masks are generated automatically.</p><button className="button button-primary" disabled={!configured} onClick={() => setShowForm(true)}>CREATE FIRST PROJECT</button></div>
         )}
       </div>
     </main>

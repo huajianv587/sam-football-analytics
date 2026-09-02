@@ -12,6 +12,26 @@ class JobState(StrEnum):
     FAILED = "failed"
 
 
+class AnalysisMode(StrEnum):
+    MANUAL_SAM = "manual_sam"
+    AUTO_ALL = "auto_all"
+
+
+class JobStage(StrEnum):
+    DRAFT = "draft"
+    QUEUED = "queued"
+    NORMALIZE = "normalize"
+    RECONSTRUCT = "reconstruct"
+    DETECT = "detect"
+    TRACK = "track"
+    CALIBRATE = "calibrate"
+    SEGMENT = "segment"
+    IDENTIFY = "identify"
+    UPLOAD = "upload"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class NormalizedBox(BaseModel):
     object_id: int = Field(ge=1)
     box: tuple[float, float, float, float]
@@ -47,9 +67,19 @@ class TeamColors(BaseModel):
 class CreateJobRequest(BaseModel):
     project_id: UUID
     source_path: str
-    prompts: list[NormalizedBox] = Field(min_length=1, max_length=30)
-    calibration: list[CalibrationPair] = Field(min_length=4, max_length=8)
+    analysis_mode: AnalysisMode = AnalysisMode.AUTO_ALL
+    prompts: list[NormalizedBox] = Field(default_factory=list, max_length=30)
+    calibration: list[CalibrationPair] = Field(default_factory=list, max_length=8)
     team_colors: TeamColors = Field(default_factory=TeamColors)
+
+    @model_validator(mode="after")
+    def validate_manual_mode(self) -> "CreateJobRequest":
+        if self.analysis_mode == AnalysisMode.MANUAL_SAM:
+            if not self.prompts:
+                raise ValueError("manual_sam requires at least one prompt box")
+            if len(self.calibration) < 4:
+                raise ValueError("manual_sam requires at least four calibration pairs")
+        return self
 
 
 class JobResponse(BaseModel):
@@ -57,7 +87,13 @@ class JobResponse(BaseModel):
     state: JobState
     slurm_job_id: str | None = None
     progress: int = Field(ge=0, le=100)
+    stage: JobStage
+    track_count: int = Field(default=0, ge=0)
     message: str | None = None
+
+
+class IdentityUpdateRequest(BaseModel):
+    roster_id: int | None = Field(default=None, ge=1)
 
 
 class HealthResponse(BaseModel):

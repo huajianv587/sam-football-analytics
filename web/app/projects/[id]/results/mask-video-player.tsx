@@ -1,10 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { decodeRle, rleContains } from "@/lib/masks";
-import type { MaskManifest, Track } from "@/lib/types";
+import { decodeRleCrop, smallestTrackAt } from "@/lib/masks";
+import type { Track, TrackMaskManifest } from "@/lib/types";
 
-const COLORS = [[184,255,98], [117,216,255], [255,189,102], [206,134,255], [255,123,115], [80,227,178]];
+const COLORS = [[184, 255, 98], [117, 216, 255], [255, 189, 102], [206, 134, 255], [255, 123, 115], [80, 227, 178]];
+type BoxPoint = { frame: number; bbox: [number, number, number, number] };
 
 export function MaskVideoPlayer({
   videoUrl,
@@ -17,7 +18,7 @@ export function MaskVideoPlayer({
   onTime,
 }: {
   videoUrl: string;
-  manifest: MaskManifest;
+  manifest: TrackMaskManifest | null;
   tracks: Track[];
   selectedId: number | null;
   showMasks: boolean;
@@ -27,72 +28,112 @@ export function MaskVideoPlayer({
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [videoDimensions, setVideoDimensions] = useState({ width: 1280, height: 720 });
+  const dimensions = manifest ? { width: manifest.width, height: manifest.height } : videoDimensions;
   const [frameIndex, setFrameIndex] = useState(0);
-  const frame = manifest.frames[Math.min(frameIndex, manifest.frames.length - 1)];
+  const fps = manifest?.fps ?? 15;
   const trackMap = useMemo(() => new Map(tracks.map((track) => [track.object_id, track])), [tracks]);
+  const maskByFrame = useMemo(() => new Map(manifest?.frames.map((frame) => [frame.index, frame.rle]) ?? []), [manifest]);
+  const detectionsByFrame = useMemo(() => {
+    const indexed = new Map<number, Array<{ track: Track; point: BoxPoint }>>();
+    for (const track of tracks) {
+      for (const point of track.detections ?? track.trajectory) {
+        const items = indexed.get(point.frame) ?? [];
+        items.push({ track, point });
+        indexed.set(point.frame, items);
+      }
+    }
+    return indexed;
+  }, [tracks]);
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
     const context = canvas?.getContext("2d");
-    if (!canvas || !context || !frame) return;
+    if (!canvas || !context) return;
     context.clearRect(0, 0, canvas.width, canvas.height);
-    if (showMasks) {
-      const image = context.createImageData(canvas.width, canvas.height);
-      Object.entries(frame.objects).forEach(([idText, rle]) => {
-        const id = Number(idText);
-        const mask = decodeRle(rle);
-        const color = COLORS[(id - 1) % COLORS.length];
-        const alpha = selectedId === null || selectedId === id ? 125 : 42;
-        for (let pixel = 0; pixel < mask.length; pixel += 1) {
-          if (!mask[pixel]) continue;
-          const offset = pixel * 4;
-          image.data[offset] = color[0]; image.data[offset + 1] = color[1]; image.data[offset + 2] = color[2]; image.data[offset + 3] = alpha;
-        }
-      });
-      context.putImageData(image, 0, 0);
+    const rle = selectedId !== null ? maskByFrame.get(frameIndex) : undefined;
+    if (showMasks && rle) {
+      const mask = decodeRleCrop(rle);
+      const image = context.createImageData(mask.width, mask.height);
+      const color = COLORS[Math.abs((selectedId ?? 1) - 1) % COLORS.length];
+      for (let pixel = 0; pixel < mask.pixels.length; pixel += 1) {
+        if (!mask.pixels[pixel]) continue;
+        const offset = pixel * 4;
+        image.data[offset] = color[0];
+        image.data[offset + 1] = color[1];
+        image.data[offset + 2] = color[2];
+        image.data[offset + 3] = 120;
+      }
+      context.putImageData(image, mask.x, mask.y);
     }
+
     if (showTrajectory && selectedId !== null) {
-      const track = trackMap.get(selectedId);
-      const path = track?.trajectory.filter((point) => point.frame <= frameIndex) ?? [];
+      const path = trackMap.get(selectedId)?.trajectory.filter((point) => point.frame <= frameIndex) ?? [];
       if (path.length > 1) {
-        context.strokeStyle = "#b8ff62"; context.lineWidth = 4; context.lineCap = "round"; context.lineJoin = "round";
-        context.beginPath(); path.forEach((point, index) => index ? context.lineTo(...point.foot) : context.moveTo(...point.foot)); context.stroke();
+        context.strokeStyle = "#b8ff62";
+        context.lineWidth = 3;
+        context.lineCap = "round";
+        context.lineJoin = "round";
+        context.beginPath();
+        path.forEach((point, index) => index ? context.lineTo(...point.foot) : context.moveTo(...point.foot));
+        context.stroke();
       }
     }
-    Object.keys(frame.objects).forEach((idText) => {
-      const id = Number(idText);
-      const point = trackMap.get(id)?.trajectory.find((sample) => sample.frame === frameIndex);
-      if (!point) return;
-      const labelY = Math.max(0, point.bbox[1] - 27);
-      context.font = "700 18px sans-serif";
+
+    for (const { track, point } of detectionsByFrame.get(frameIndex) ?? []) {
+      const color = COLORS[Math.abs(track.object_id - 1) % COLORS.length];
+      context.strokeStyle = selectedId === track.object_id ? "#b8ff62" : `rgba(${color.join(",")},.72)`;
+      context.lineWidth = selectedId === track.object_id ? 3 : 1.25;
+      context.strokeRect(point.bbox[0], point.bbox[1], point.bbox[2] - point.bbox[0], point.bbox[3] - point.bbox[1]);
+      const labelY = Math.max(0, point.bbox[1] - 20);
+      context.font = "700 13px sans-serif";
       context.fillStyle = "rgba(5,12,10,.86)";
-      context.fillRect(point.bbox[0], labelY, 58, 25);
-      context.fillStyle = `rgb(${COLORS[(id - 1) % COLORS.length].join(",")})`;
-      context.fillText(`ID ${id}`, point.bbox[0] + 6, labelY + 19);
-    });
-  }, [frame, frameIndex, selectedId, showMasks, showTrajectory, trackMap]);
+      context.fillRect(point.bbox[0], labelY, 46, 18);
+      context.fillStyle = `rgb(${color.join(",")})`;
+      context.fillText(`ID ${track.object_id}`, point.bbox[0] + 5, labelY + 14);
+    }
+  }, [detectionsByFrame, frameIndex, maskByFrame, selectedId, showMasks, showTrajectory, trackMap]);
 
   useEffect(() => draw(), [draw]);
 
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !("requestVideoFrameCallback" in video)) return;
+    let callbackId = 0;
+    const updateFrame: VideoFrameRequestCallback = (_now, metadata) => {
+      setFrameIndex(Math.round(metadata.mediaTime * fps));
+      onTime(metadata.mediaTime);
+      callbackId = video.requestVideoFrameCallback(updateFrame);
+    };
+    callbackId = video.requestVideoFrameCallback(updateFrame);
+    return () => video.cancelVideoFrameCallback(callbackId);
+  }, [fps, onTime, videoUrl]);
+
   function syncTime() {
     const time = videoRef.current?.currentTime ?? 0;
-    setFrameIndex(Math.min(Math.round(time * manifest.fps), manifest.frames.length - 1));
+    setFrameIndex(Math.round(time * fps));
     onTime(time);
+  }
+
+  function readVideoSize() {
+    const video = videoRef.current;
+    if (video?.videoWidth && video.videoHeight && !manifest) {
+      setVideoDimensions({ width: video.videoWidth, height: video.videoHeight });
+    }
   }
 
   function click(event: React.MouseEvent<HTMLCanvasElement>) {
     const rect = event.currentTarget.getBoundingClientRect();
-    const x = Math.floor(((event.clientX - rect.left) / rect.width) * manifest.width);
-    const y = Math.floor(((event.clientY - rect.top) / rect.height) * manifest.height);
-    for (const [id, rle] of Object.entries(frame?.objects ?? {})) {
-      if (rleContains(rle, x, y)) { onSelect(Number(id)); return; }
-    }
+    const x = ((event.clientX - rect.left) / rect.width) * dimensions.width;
+    const y = ((event.clientY - rect.top) / rect.height) * dimensions.height;
+    const selected = smallestTrackAt(tracks, frameIndex, x, y);
+    if (selected) onSelect(selected.object_id);
   }
 
   return (
     <div className="video-stage">
-      <video ref={videoRef} src={videoUrl} crossOrigin="anonymous" controls playsInline onTimeUpdate={syncTime} onSeeked={syncTime} />
-      <canvas ref={canvasRef} width={manifest.width} height={manifest.height} onClick={click} />
+      <video ref={videoRef} src={videoUrl} crossOrigin="anonymous" controls playsInline onLoadedMetadata={readVideoSize} onTimeUpdate={syncTime} onSeeked={syncTime} />
+      <canvas ref={canvasRef} width={dimensions.width} height={dimensions.height} onClick={click} />
     </div>
   );
 }

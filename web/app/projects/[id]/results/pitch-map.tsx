@@ -13,7 +13,8 @@ export function PitchMap({ tracks, selectedId }: { tracks: Track[]; selectedId: 
     ctx.fillStyle = "#174c36"; ctx.fillRect(0, 0, canvas.width, canvas.height);
     const visible = selectedId === null ? tracks : tracks.filter((track) => track.object_id === selectedId);
     visible.forEach((track, trackIndex) => {
-      track.trajectory.filter((_, index) => index % 3 === 0).forEach((point) => {
+      track.trajectory.filter((point, index) => index % 3 === 0 && point.pitch !== null).forEach((point) => {
+        if (!point.pitch) return;
         const x = (point.pitch[0] / 105) * canvas.width;
         const y = (point.pitch[1] / 68) * canvas.height;
         const gradient = ctx.createRadialGradient(x, y, 0, x, y, 28);
