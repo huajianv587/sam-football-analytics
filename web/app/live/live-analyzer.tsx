@@ -17,6 +17,7 @@ const TARGET_FPS = 15;
 export function LiveAnalyzer() {
   const liveUrl = process.env.NEXT_PUBLIC_LIVE_WS_URL ?? "ws://127.0.0.1:8010/v1/live/ws";
   const videoRef = useRef<HTMLVideoElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const captureRef = useRef<HTMLCanvasElement>(null);
   const outputRef = useRef<HTMLCanvasElement>(null);
   const socketRef = useRef<WebSocket | null>(null);
@@ -49,6 +50,7 @@ export function LiveAnalyzer() {
 
   function chooseVideo(file: File | undefined) {
     if (!file) return;
+    if (fileInputRef.current) fileInputRef.current.value = "";
     stop();
     if (sourceUrl) URL.revokeObjectURL(sourceUrl);
     const url = URL.createObjectURL(file);
@@ -210,7 +212,7 @@ export function LiveAnalyzer() {
           </div>
           <canvas ref={captureRef} hidden />
           <div className="live-controls">
-            <label className="button button-secondary"><Upload size={14} /> VIDEO FILE<input hidden type="file" accept="video/*" onChange={(event) => chooseVideo(event.target.files?.[0])} /></label>
+            <label className="button button-secondary"><Upload size={14} /> VIDEO FILE<input ref={fileInputRef} hidden type="file" accept="video/*" onChange={(event) => chooseVideo(event.target.files?.[0])} /></label>
             <button className="button button-secondary" onClick={useCamera}><Camera size={14} /> FIELD CAMERA</button>
             {!active ? <button className="button button-primary" disabled={!sourceName} onClick={connect}><Play size={14} /> START LIVE</button> : <button className="button button-danger" onClick={stop}><CircleStop size={14} /> STOP</button>}
             <span className="live-source-name">{sourceName || "No source"}</span>

@@ -1,7 +1,7 @@
 "use client";
 
 import { Camera, CheckCircle2, CloudUpload, Plane, Play, Radio, RotateCcw } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const MAX_VIDEO_BYTES = 50 * 1024 * 1024;
 const LAST_JOB_KEY = "pitchvision:last-job";
@@ -32,6 +32,7 @@ export function OfflineAnalyzer() {
   const [progress, setProgress] = useState(0);
   const [trackCount, setTrackCount] = useState(0);
   const [message, setMessage] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => () => { if (videoUrl) URL.revokeObjectURL(videoUrl); }, [videoUrl]);
 
@@ -84,6 +85,9 @@ export function OfflineAnalyzer() {
 
   async function chooseFile(nextFile: File | undefined) {
     if (!nextFile) return;
+    // Clear the native value so selecting the same file again still fires
+    // change after a failed validation or a cancelled analysis.
+    if (fileInputRef.current) fileInputRef.current.value = "";
     const extension = nextFile.name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
     const knownVideoExtension = ["mp4", "mov", "m4v", "webm", "mkv", "avi"].includes(extension ?? "");
     // Some camera exports (including extensionless `videoplayback` files) have an
@@ -179,7 +183,7 @@ export function OfflineAnalyzer() {
         <section className="panel simple-upload">
           <div className="upload-layout">
             <div className="upload-copy"><span className="upload-icon"><CloudUpload size={24} /></span><div><h2>Select match footage</h2><p>H.264 MP4 · up to 60 seconds · 50 MB maximum</p></div></div>
-            <div className="upload-action"><label className="button button-primary upload-trigger"><span>SELECT VIDEO</span><input type="file" onChange={(event) => { const selected = event.currentTarget.files?.[0]; if (selected) void chooseFile(selected); }} onInput={(event) => { const selected = event.currentTarget.files?.[0]; if (selected) void chooseFile(selected); }} /></label><span>H.264 MP4 · up to 60 seconds · 50 MB</span></div>
+            <div className="upload-action"><label className="button button-primary upload-trigger"><span>SELECT VIDEO</span><input ref={fileInputRef} type="file" accept="video/*,.mkv,.avi,.m4v" onChange={(event) => { const selected = event.currentTarget.files?.[0]; if (selected) void chooseFile(selected); }} onInput={(event) => { const selected = event.currentTarget.files?.[0]; if (selected) void chooseFile(selected); }} /></label><span>H.264 MP4 · up to 60 seconds · 50 MB</span></div>
           </div>
           {message && <p className="form-error">{message}</p>}
         </section>
