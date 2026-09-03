@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PitchVision Validation Annotator</title>
+  <style>
+    :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #12231d; background: #f7f8f6; }
+    * { box-sizing: border-box; } body { margin: 0; } main { max-width: 1500px; margin: 0 auto; padding: 28px; }
+    header, .toolbar, .layout, .objects { display: flex; gap: 12px; } header { align-items: baseline; justify-content: space-between; border-bottom: 1px solid #dfe4df; padding-bottom: 18px; }
+    h1 { margin: 0; font-size: 20px; font-weight: 750; } header span, .muted { color: #65756d; font-size: 13px; }
+    .toolbar { margin: 20px 0; align-items: center; flex-wrap: wrap; } button, input { border: 1px solid #ccd6cf; background: #fff; color: #12231d; font: inherit; font-size: 13px; min-height: 36px; border-radius: 5px; padding: 0 12px; }
+    button { cursor: pointer; font-weight: 650; } button.primary { background: #8cdd36; border-color: #78c82d; } button.active { outline: 2px solid #8cdd36; outline-offset: 1px; } button:disabled { cursor: not-allowed; opacity: .45; }
+    .layout { align-items: flex-start; } .stage { flex: 1; min-width: 0; border: 1px solid #dfe4df; background: #111; border-radius: 6px; overflow: hidden; }
+    canvas { display: block; width: 100%; height: auto; max-height: calc(100vh - 190px); object-fit: contain; cursor: crosshair; }
+    aside { width: 280px; background: #fff; border: 1px solid #dfe4df; border-radius: 6px; padding: 16px; } h2 { font-size: 13px; margin: 0 0 12px; }
+    .objects { flex-direction: column; max-height: 52vh; overflow: auto; } .object { width: 100%; text-align: left; display: flex; justify-content: space-between; align-items: center; }
+    .object.active { border-color: #8cdd36; background: #f3fbe9; } .field { display: grid; gap: 5px; margin-top: 14px; } .field input { width: 100%; }
+    .status { margin-left: auto; font-variant-numeric: tabular-nums; } @media (max-width: 800px) { main { padding: 16px; } .layout { flex-direction: column; } aside { width: 100%; } canvas { max-height: 58vh; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header><h1>PitchVision Validation Annotator</h1><span id="frame-label">Loading</span></header>
+    <div class="toolbar">
+      <button id="previous">Previous</button><button id="next">Next</button>
+      <button id="box-mode" class="active">Box</button><button id="mask-mode">Mask polygon</button><button id="finish-polygon" disabled>Finish mask</button>
+      <button id="export" class="primary">Export annotations</button><span id="status" class="status muted"></span>
+    </div>
+    <div class="layout"><section class="stage"><canvas id="canvas"></canvas></section><aside>
+      <h2>Ground-truth objects</h2><div id="objects" class="objects"></div>
+      <label class="field">Stable GT ID<input id="gt-id" placeholder="player-01"></label>
+      <button id="delete" style="margin-top:12px">Delete selected</button>
+      <p class="muted">Box coordinates and optional masks are stored in source pixels.</p>
+    </aside></div>
+  </main>
+  <script>
+    const canvas = document.querySelector('#canvas'), ctx = canvas.getContext('2d');
+    const image = new Image(); let data, annotationUrl, index = 0, selected = null, dragStart = null, polygon = [], mode = 'box';
+    const color = (objectIndex) => ['#8cdd36','#2a9d8f','#e76f51','#5b8def','#9b5de5'][objectIndex % 5];
+    const point = (event) => { const rect = canvas.getBoundingClientRect(); return [(event.clientX - rect.left) * canvas.width / rect.width, (event.clientY - rect.top) * canvas.height / rect.height]; };
+    const activeFrame = () => data.frames[index];
+    function status(text) { document.querySelector('#status').textContent = text; }
+    function draw() {
+      if (!image.complete) return; ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+      activeFrame().objects.forEach((object, objectIndex) => { const [x1,y1,x2,y2] = object.bbox, stroke = color(objectIndex); ctx.strokeStyle = stroke; ctx.lineWidth = objectIndex === selected ? 4 : 2; ctx.strokeRect(x1,y1,x2-x1,y2-y1); ctx.fillStyle = stroke; ctx.font = '700 16px sans-serif'; ctx.fillText(object.gt_id, x1 + 3, Math.max(16, y1 - 5)); });
+      if (polygon.length) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); polygon.forEach(([x,y], i) => i ? ctx.lineTo(x,y) : ctx.moveTo(x,y)); ctx.stroke(); polygon.forEach(([x,y]) => { ctx.fillStyle = '#8cdd36'; ctx.fillRect(x - 3,y - 3,6,6); }); }
+    }
+    function renderObjects() { const root = document.querySelector('#objects'); root.replaceChildren(); activeFrame().objects.forEach((object, objectIndex) => { const button = document.createElement('button'); button.className = `object ${objectIndex === selected ? 'active' : ''}`; button.textContent = object.gt_id; const tag = document.createElement('small'); tag.textContent = object.mask_rle ? 'MASK' : 'BOX'; button.append(tag); button.onclick = () => { selected = objectIndex; document.querySelector('#gt-id').value = object.gt_id; renderObjects(); draw(); }; root.append(button); }); document.querySelector('#delete').disabled = selected === null; }
+    function loadFrame() { const frame = activeFrame(); selected = null; polygon = []; image.onload = () => { canvas.width = data.width; canvas.height = data.height; draw(); }; image.src = new URL(frame.image, annotationUrl).href; document.querySelector('#frame-label').textContent = `Frame ${frame.frame} · ${index + 1}/${data.frames.length}`; document.querySelector('#gt-id').value = ''; renderObjects(); }
+    function rleFromPolygon(points) { const maskCanvas = document.createElement('canvas'); maskCanvas.width = data.width; maskCanvas.height = data.height; const maskCtx = maskCanvas.getContext('2d'); maskCtx.beginPath(); points.forEach(([x,y], i) => i ? maskCtx.lineTo(x,y) : maskCtx.moveTo(x,y)); maskCtx.closePath(); maskCtx.fill(); const alpha = maskCtx.getImageData(0,0,data.width,data.height).data; let x1=data.width,y1=data.height,x2=0,y2=0; for(let y=0;y<data.height;y++) for(let x=0;x<data.width;x++) if(alpha[(y*data.width+x)*4+3]) { x1=Math.min(x1,x); y1=Math.min(y1,y); x2=Math.max(x2,x+1); y2=Math.max(y2,y+1); } if(x2<=x1 || y2<=y1) return null; const values=[]; for(let y=y1;y<y2;y++) for(let x=x1;x<x2;x++) values.push(alpha[(y*data.width+x)*4+3] ? 1 : 0); const counts=[]; let current=values[0], run=0; for(const value of values){ if(value===current) run++; else { counts.push(run); current=value; run=1; } } counts.push(run); if(values[0]) counts.unshift(0); return {size:[data.height,data.width],bbox:[x1,y1,x2,y2],counts}; }
+    canvas.addEventListener('pointerdown', (event) => { const p = point(event); if(mode === 'mask') { polygon.push(p); document.querySelector('#finish-polygon').disabled = polygon.length < 3; draw(); return; } dragStart = p; });
+    canvas.addEventListener('pointerup', (event) => { if(!dragStart || mode !== 'box') return; const end=point(event), [x1,y1]=dragStart, [x2,y2]=end; dragStart=null; if(Math.abs(x2-x1)<4 || Math.abs(y2-y1)<4) return; const object={gt_id:`person-${String(activeFrame().objects.length+1).padStart(2,'0')}`,bbox:[Math.round(Math.min(x1,x2)),Math.round(Math.min(y1,y2)),Math.round(Math.max(x1,x2)),Math.round(Math.max(y1,y2))],mask_rle:null,pitch:null}; activeFrame().objects.push(object); selected=activeFrame().objects.length-1; document.querySelector('#gt-id').value=object.gt_id; renderObjects(); draw(); });
+    document.querySelector('#gt-id').addEventListener('input', (event) => { if(selected===null) return; activeFrame().objects[selected].gt_id=event.target.value; renderObjects(); draw(); });
+    document.querySelector('#delete').onclick=()=>{ if(selected===null) return; activeFrame().objects.splice(selected,1); selected=null; renderObjects(); draw(); };
+    document.querySelector('#previous').onclick=()=>{ index=Math.max(0,index-1); loadFrame(); }; document.querySelector('#next').onclick=()=>{ index=Math.min(data.frames.length-1,index+1); loadFrame(); };
+    document.querySelector('#box-mode').onclick=()=>{ mode='box'; polygon=[]; document.querySelector('#box-mode').classList.add('active'); document.querySelector('#mask-mode').classList.remove('active'); document.querySelector('#finish-polygon').disabled=true; draw(); };
+    document.querySelector('#mask-mode').onclick=()=>{ if(selected===null) return status('Select an object before drawing a mask.'); mode='mask'; polygon=[]; document.querySelector('#mask-mode').classList.add('active'); document.querySelector('#box-mode').classList.remove('active'); status('Click polygon vertices, then finish mask.'); draw(); };
+    document.querySelector('#finish-polygon').onclick=()=>{ if(selected===null || polygon.length<3) return; activeFrame().objects[selected].mask_rle=rleFromPolygon(polygon); polygon=[]; document.querySelector('#finish-polygon').disabled=true; renderObjects(); draw(); status('Mask attached to selected object.'); };
+    document.querySelector('#export').onclick=()=>{ const file=new Blob([JSON.stringify(data,null,2)+'\n'],{type:'application/json'}), link=document.createElement('a'); link.href=URL.createObjectURL(file); link.download='annotations.json'; link.click(); URL.revokeObjectURL(link.href); };
+    document.addEventListener('keydown',(event)=>{ if(event.key==='ArrowLeft') document.querySelector('#previous').click(); if(event.key==='ArrowRight') document.querySelector('#next').click(); });
+    annotationUrl = new URL(new URLSearchParams(location.search).get('annotations') || 'annotations.json', location.href);
+    fetch(annotationUrl).then(response=>response.json()).then((value)=>{ data=value; loadFrame(); }).catch((error)=>status(`Unable to load annotations.json: ${error.message}`));
+  </script>
+</body>
+</html>

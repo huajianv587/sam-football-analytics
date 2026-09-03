@@ -18,7 +18,15 @@ backend/.venv/bin/python backend/scripts/create_live_annotation_set.py \
 ```
 
 Label `validation/live-30frames/annotations.json` in an independent annotation
-tool. Add pixel `bbox` values and stable `gt_id` values for every visible person.
+tool. A self-contained local option is included:
+
+```bash
+cd validation
+python3 -m http.server 8090
+```
+
+Open `http://127.0.0.1:8090/annotate.html?annotations=live-30frames/annotations.json`.
+Add pixel `bbox` values and stable `gt_id` values for every visible person.
 For SAM IoU, add an independent full-resolution `mask_rle` for any labelled
 person and request SAM refinement for that Track/frame before evaluation.
 
