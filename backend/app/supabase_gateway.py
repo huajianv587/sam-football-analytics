@@ -5,6 +5,7 @@ from typing import Any
 from supabase import Client, create_client
 
 from .config import get_settings
+from live.identity import best_face_match
 
 
 def identity_update_values(
@@ -75,6 +76,31 @@ class SupabaseGateway:
         return self.client.table("roster").select("id,team,squad_number,player_name,position").eq(
             "match_label", match_label
         ).execute().data
+
+    def create_face_profile(
+        self, owner_id: str, label: str, embedding: list[float], photo: bytes | None = None
+    ) -> dict[str, Any]:
+        row = self.client.table("face_profiles").insert({
+            "owner_id": owner_id, "label": label, "embedding": embedding,
+        }).execute().data[0]
+        if photo:
+            path = f"{owner_id}/{row['id']}.jpg"
+            self.client.storage.from_("face-photos").upload(
+                path, photo, {"content-type": "image/jpeg", "upsert": "true"}
+            )
+            row = self.client.table("face_profiles").update({"photo_path": path}).eq(
+                "id", row["id"]
+            ).eq("owner_id", owner_id).execute().data[0]
+        return {key: row.get(key) for key in ("id", "label", "photo_path", "created_at")}
+
+    def face_profiles(self, owner_id: str) -> list[dict[str, Any]]:
+        return self.client.table("face_profiles").select(
+            "id,label,embedding,photo_path,created_at"
+        ).eq("owner_id", owner_id).order("created_at", desc=True).execute().data
+
+    def match_face(self, owner_id: str, embedding: list[float]) -> dict[str, Any]:
+        result = best_face_match(embedding, self.face_profiles(owner_id))
+        return {"profile_id": result.profile_id, "label": result.label, "score": result.score}
 
     def track_count(self, project_id: str) -> int:
         response = self.client.table("tracks").select("id", count="exact").eq(

@@ -4,7 +4,7 @@ export type LiveTrack = {
   track_id: number;
   bbox: [number, number, number, number];
   confidence: number;
-  class_name: "person";
+  class_name: string;
   mask: Array<[number, number]>;
   mask_source: "lightweight" | "sam";
   trail: Array<[number, number]>;

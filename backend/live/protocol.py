@@ -7,7 +7,7 @@ class LiveTrack(BaseModel):
     track_id: int
     bbox: tuple[float, float, float, float]
     confidence: float
-    class_name: Literal["person"] = "person"
+    class_name: str = "person"
     mask: list[tuple[float, float]] = Field(default_factory=list)
     mask_source: Literal["lightweight", "sam"] = "lightweight"
     trail: list[tuple[float, float]] = Field(default_factory=list)

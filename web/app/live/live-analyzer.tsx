@@ -101,7 +101,7 @@ export function LiveAnalyzer() {
       tracksRef.current = payload.tracks;
       setPerformance({ fps: payload.processing_fps, latency: payload.inference_ms });
       setState("running");
-      setMessage(`${payload.tracks.length} people · ${payload.processing_fps.toFixed(1)} processing FPS`);
+      setMessage(`${payload.tracks.length} objects · ${payload.processing_fps.toFixed(1)} processing FPS`);
       window.setTimeout(() => void sendNextFrame(), 0);
     };
     socket.onerror = () => {
@@ -224,11 +224,12 @@ export function LiveAnalyzer() {
         <aside className="live-side">
           <section className="panel live-summary">
             <span className="eyebrow">LIVE TELEMETRY</span>
-            <div className="stat-grid"><div className="stat"><span>PEOPLE</span><strong>{tracks.length}</strong></div><div className="stat"><span>PROCESSING</span><strong>{performance.fps.toFixed(1)} FPS</strong></div><div className="stat"><span>INFERENCE</span><strong>{performance.latency.toFixed(0)} ms</strong></div><div className="stat"><span>MODE</span><strong>{displayMode === "boxes" ? "BOX" : "MASK"}</strong></div></div>
+            <div className="stat-grid"><div className="stat"><span>OBJECTS</span><strong>{tracks.length}</strong></div><div className="stat"><span>PROCESSING</span><strong>{performance.fps.toFixed(1)} FPS</strong></div><div className="stat"><span>INFERENCE</span><strong>{performance.latency.toFixed(0)} ms</strong></div><div className="stat"><span>MODE</span><strong>{displayMode === "boxes" ? "BOX" : "MASK"}</strong></div></div>
           </section>
           <section className="panel player-card">
             {selected ? <>
               <div className="player-identity"><span className="jersey-badge">{selected.track_id}</span><div><h2>Track {selected.track_id}</h2><p>{selected.mask_source === "sam" ? "SAM refined Mask" : "Lightweight Mask"}</p></div></div>
+              <div className="metric-row"><span>Class</span><strong>{selected.class_name}</strong></div>
               <div className="metric-row"><span>Identity</span><strong>Unidentified</strong></div>
               <div className="metric-row"><span>Confidence</span><strong>{Math.round(selected.confidence * 100)}%</strong></div>
               <div className="metric-row"><span>Pixel speed</span><strong>{selected.speed_px_s.toFixed(1)} px/s</strong></div>
@@ -236,7 +237,7 @@ export function LiveAnalyzer() {
               <button className="button button-secondary live-clear" onClick={clearSelection}>CLEAR SELECTION</button>
             </> : <div className="live-unselected"><Users size={30} /><h3>Select any person</h3><p>All people use lightweight Masks. Clicking a Track activates SAM refinement for that person only.</p></div>}
           </section>
-          <p className="micro muted">RTSP/HLS ingest uses the same WebSocket result protocol but runs at the GPU worker. Browser camera and video are implemented first for measurable end-to-end latency.</p>
+          <p className="micro muted">Browser video and camera are live now. RTSP/ONVIF/HLS gateways use the same frame protocol when deployed beside the camera.</p>
         </aside>
       </div>
     </div>

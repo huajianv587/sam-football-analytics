@@ -25,6 +25,7 @@ class LiveInferenceEngine:
         self.confidence = float(os.getenv("LIVE_CONFIDENCE", "0.25"))
         self.segment_model_path = os.getenv("LIVE_SEG_MODEL", "yolo11s-seg.pt")
         self.segmenter = YOLO(self.segment_model_path)
+        self.class_names = self._configured_classes()
         self.motion = MotionHistory()
         self.frame_times: deque[float] = deque(maxlen=30)
         self.lock = Lock()
@@ -51,6 +52,24 @@ class LiveInferenceEngine:
     def model_name(self) -> str:
         return Path(self.segment_model_path).name
 
+    def _configured_classes(self) -> set[str] | None:
+        """Return configured class names; None means all model classes."""
+        raw = os.getenv(
+            "LIVE_CLASSES",
+            "person,cat,dog,bird,horse,sheep,cow,chair,couch,bed,dining table",
+        ).strip()
+        if not raw or raw.lower() == "all":
+            return None
+        return {name.strip().lower() for name in raw.split(",") if name.strip()}
+
+    def _class_ids(self) -> list[int] | None:
+        if self.class_names is None:
+            return None
+        names = self.segmenter.names
+        if isinstance(names, list):
+            names = dict(enumerate(names))
+        return [int(index) for index, name in names.items() if str(name).lower() in self.class_names]
+
     def reset(self) -> None:
         with self.lock:
             self.motion.clear()
@@ -72,7 +91,7 @@ class LiveInferenceEngine:
             result = self.segmenter.track(
                 frame,
                 persist=True,
-                classes=[0],
+                classes=self._class_ids(),
                 tracker="bytetrack.yaml",
                 conf=self.confidence,
                 iou=0.55,
@@ -105,6 +124,8 @@ class LiveInferenceEngine:
         ids = boxes.id.int().cpu().tolist()
         coordinates = boxes.xyxy.cpu().tolist()
         confidences = boxes.conf.cpu().tolist()
+        labels = boxes.cls.int().cpu().tolist() if boxes.cls is not None else [0] * len(ids)
+        names = result.names
         polygons = result.masks.xy if result.masks is not None else []
         active = set(ids)
         output: list[LiveTrack] = []
@@ -126,6 +147,7 @@ class LiveInferenceEngine:
                 track_id=track_id,
                 bbox=bbox,
                 confidence=round(float(confidences[index]), 3),
+                class_name=str(names[int(labels[index])]),
                 mask=polygon,
                 mask_source=source,
                 trail=self.motion.trail(track_id),

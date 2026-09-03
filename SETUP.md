@@ -44,6 +44,9 @@ TC2_HOST=
 TC2_USER=
 TC2_PORT=22
 TC2_REMOTE_ROOT=/scratch-share/<username>/sam-football
+
+# Optional live object classes (COCO labels)
+LIVE_CLASSES=person,cat,dog,bird,horse,sheep,cow,chair,couch,bed,dining table
 ```
 
 `AUTH_DISABLED=true` is the local single-admin mode used by the portfolio demo:

@@ -1,3 +1,5 @@
+import json
+
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -7,6 +9,9 @@ from .job_runner import JobRunner
 from .schemas import (
     AnalysisMode,
     CreateJobRequest,
+    FaceEmbeddingRequest,
+    FaceMatchResponse,
+    FaceProfileResponse,
     HealthResponse,
     IdentityUpdateRequest,
     JobResponse,
@@ -37,6 +42,39 @@ def runner() -> JobRunner:
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     return HealthResponse()
+
+
+@app.post("/v1/face-profiles", response_model=FaceProfileResponse, status_code=201)
+async def create_face_profile(
+    label: str = Form(..., min_length=1, max_length=120),
+    embedding: str = Form(...),
+    photo: UploadFile | None = File(default=None),
+    owner_id: str = Depends(current_user_id),
+) -> FaceProfileResponse:
+    try:
+        vector = FaceEmbeddingRequest(embedding=json.loads(embedding)).embedding
+    except (json.JSONDecodeError, ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail="embedding must be a JSON float array") from exc
+    photo_bytes = await photo.read(5 * 1024 * 1024 + 1) if photo else None
+    if photo_bytes and len(photo_bytes) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="face photo must be 5 MB or less")
+    if photo and photo.content_type not in {"image/jpeg", "image/png", "image/webp"}:
+        raise HTTPException(status_code=415, detail="face photo must be JPEG, PNG or WebP")
+    return FaceProfileResponse.model_validate(
+        runner().gateway.create_face_profile(owner_id, label, vector, photo_bytes)
+    )
+
+
+@app.get("/v1/face-profiles", response_model=list[FaceProfileResponse])
+async def list_face_profiles(owner_id: str = Depends(current_user_id)) -> list[FaceProfileResponse]:
+    return [FaceProfileResponse.model_validate(row) for row in runner().gateway.face_profiles(owner_id)]
+
+
+@app.post("/v1/face-profiles/match", response_model=FaceMatchResponse)
+async def match_face(
+    request: FaceEmbeddingRequest, owner_id: str = Depends(current_user_id)
+) -> FaceMatchResponse:
+    return FaceMatchResponse.model_validate(runner().gateway.match_face(owner_id, request.embedding))
 
 
 @app.post("/v1/jobs", response_model=JobResponse, status_code=202)

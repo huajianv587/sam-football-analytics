@@ -96,6 +96,23 @@ class IdentityUpdateRequest(BaseModel):
     roster_id: int | None = Field(default=None, ge=1)
 
 
+class FaceEmbeddingRequest(BaseModel):
+    embedding: list[float] = Field(min_length=32, max_length=2048)
+
+
+class FaceProfileResponse(BaseModel):
+    id: str
+    label: str
+    photo_path: str | None = None
+    created_at: str | None = None
+
+
+class FaceMatchResponse(BaseModel):
+    profile_id: str | None
+    label: str | None
+    score: float
+
+
 class RefinementResponse(BaseModel):
     project_id: UUID
     object_id: int = Field(ge=1)

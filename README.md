@@ -11,8 +11,9 @@ general human scenes:
   geometry, precomputes high-quality SAM Masks, derives metric movement and
   persists auditable artifacts in Supabase.
 
-The live model filters the generic COCO `person` class, not a football class.
-The same path therefore applies to football, basketball, athletics, training
+The live model uses configurable COCO classes (people by default plus common
+animals and furniture), not a football class. The same path therefore applies
+to football, basketball, athletics, training
 sessions, handheld footage, field cameras and ordinary crowd scenes. Sport
 semantics and court calibration are optional analytics layers rather than
 requirements for detection, Mask rendering or identity tracking.
@@ -30,7 +31,7 @@ GPU performance.
 1. Open `/live` and choose any video or browser camera.
 2. The browser keeps at most one JPEG frame in flight to the tunneled A40 worker;
    slow inference drops capture opportunities instead of building latency.
-3. YOLO11 Segment returns every person's box, confidence and Mask while
+3. YOLO11 Segment returns every configured object's box, confidence and Mask while
    ByteTrack keeps a persistent ID.
 4. The server sends compact Mask polygons, movement trails and telemetry through
    one binary WebSocket session.
@@ -128,12 +129,12 @@ modes share the rule that Track ID—not SAM memory—is the identity authority.
 
 ## Live GPU pipeline
 
-### All-person lightweight path
+### All-object lightweight path
 
 - `yolo11s-seg.pt` runs at 640-pixel inference size with FP16 on CUDA.
-- Only the generic COCO `person` class is retained. No football, basketball or
-  stadium classifier is required.
-- Each model result contains aligned per-person box, confidence and instance
+- The default set includes `person`, common animals and furniture. Set
+  `LIVE_CLASSES=all` to expose every class in the checkpoint.
+- Each model result contains aligned per-object box, confidence and instance
   Mask. Mask contours are simplified before JSON serialization.
 - ByteTrack state persists within one WebSocket session. A new camera session
   resets tracker state so unrelated streams cannot share IDs.
@@ -150,6 +151,15 @@ modes share the rule that Track ID—not SAM memory—is the identity authority.
 - This live implementation deliberately uses the image predictor per incoming
   frame. The official video predictor expects a known video/frame store; the
   incremental-camera memory loop is a separate optimization, not assumed here.
+
+### Optional face identity path
+
+The controller exposes private Supabase-backed `face_profiles` records and a
+cosine matching endpoint. A deployment-specific face encoder (InsightFace /
+ArcFace is a suitable choice) converts an enrolled photo to an embedding; the
+API stores the embedding and optionally the original photo in the private
+`face-photos` bucket. Scores below the matching threshold stay
+`Unidentified`. The list endpoint never returns embeddings.
 
 ### Transport and rendering
 
@@ -384,6 +394,9 @@ not evidence that the verified roster or manual correction path is broken.
 | --- | --- | --- |
 | `GET` | live worker `/health` | Generic model, load and SAM capability state |
 | `WS` | live worker `/v1/live/ws` | Binary frames, target selection and live person results |
+| `POST` | `/v1/face-profiles` | Enroll a private face profile (embedding and optional photo) |
+| `GET` | `/v1/face-profiles` | List enrolled profile labels without embeddings |
+| `POST` | `/v1/face-profiles/match` | Match an encoder-produced embedding |
 | `GET` | `/health` | Controller and scheduler identity |
 | `POST` | `/v1/offline/jobs` | Direct local-admin MP4 upload and automatic submission |
 | `GET` | `/v1/offline/jobs/{project_id}` | Offline stage, progress, Job ID and Track count |
