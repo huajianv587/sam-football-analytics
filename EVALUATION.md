@@ -5,6 +5,32 @@ means it was observed on the supplied 1280 x 720, 15 FPS broadcast through the
 active NVIDIA A40 service. “Configured” describes a model or software limit and
 is not an accuracy claim.
 
+## Latest reproducible acceptance run (2026-09-03)
+
+The current live-worker build was deployed to TC2 A40 job `33522` and tested
+against `西班牙_阿根廷_连续镜头_30s_720p15.mp4`. This is an indexed video
+precompute run, so every reported frame is retained for native browser
+playback, pause and seek rather than being recomputed after a seek.
+
+| Quantity | Value | Meaning |
+| --- | ---: | --- |
+| Source duration / frames | 30.00 s / 450.00 | 1280 x 720 at 15.00 FPS |
+| Returned frames with people | 450.00 / 450.00 | No empty-frame gap in this run |
+| Visible people per frame | 11.00 / 18.00 / 19.00 | Minimum / median / maximum |
+| Distinct public Track IDs | 29.00 | Monotonic IDs across the complete session |
+| Lightweight inference P50 / P95 | 62.10 / 64.20 ms | A40 service measurement |
+| Mean reported processing rate | 15.88 FPS | Service-side throughput |
+| Predicted Track observations | 1,427.00 | Explicit short-gap compensation, not detector facts |
+| Reported public-ID reassociations | 0.00 | Stable registry counter for this run |
+| Indexed seek round trip | Exact | Frame 0 response before and after a seek to frame 210 matched byte-for-byte |
+| Selected SAM refinement | 31.00 frames | Track 1, centre frame 15, radius 15, state `ready` |
+| Mac failover smoke | 15.00 / 15.00 frames | A forced A40 connection failure completed using the local MPS worker |
+
+The A40 route is selected whenever it is healthy. Mac MPS is a deliberate
+fallback for lightweight processing only; its UI and API response identify the
+executor, and selected-person SAM reports its A40 requirement instead of
+claiming a refinement result.
+
 ## 1. Automatic detection after upload
 
 The default live path uses Ultralytics YOLO11m-seg. It detects and segments
@@ -144,7 +170,7 @@ Mask IoU is claimed without a labelled validation set.
 - 630.00 total live regression frames: every frame returned Tracks and a
   lightweight Mask.
 - 90.00 selected-SAM frames: 89.00 returned a SAM Mask.
-- 71.00 backend tests, 10.00 frontend tests, ESLint and production build:
+- 81.00 backend tests, 10.00 frontend tests, ESLint and production build:
   all passed.
 - Controller and A40 live `/health` endpoints: passed.
 
