@@ -24,6 +24,10 @@ inference service, typed FastAPI offline control plane, Supabase persistence,
 Slurm orchestration, SAM video segmentation, reproducible checks and measured
 GPU performance.
 
+For the complete per-feature model data, throughput, latency, instance-capacity
+and offline artifact review, see [EVALUATION.md](./EVALUATION.md). All values
+there are rounded to two decimal places and marked as measured or configured.
+
 ## Product flow
 
 ### Live
