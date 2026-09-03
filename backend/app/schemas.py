@@ -125,3 +125,24 @@ class RefinementResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: Literal["ok"] = "ok"
     scheduler: Literal["tc2-slurm"] = "tc2-slurm"
+
+
+class VideoSessionResponse(BaseModel):
+    session_id: str
+    filename: str
+    state: Literal["queued", "running", "ready", "failed"]
+    stage: str
+    progress: float = Field(ge=0, le=100)
+    processed_frames: int = Field(ge=0)
+    total_frames: int = Field(ge=0)
+    duration_s: float = Field(ge=0)
+    fps: float = Field(gt=0)
+    width: int = Field(gt=0)
+    height: int = Field(gt=0)
+    track_count: int = Field(ge=0)
+    message: str | None = None
+
+
+class VideoRefineRequest(BaseModel):
+    center_frame: int = Field(ge=0)
+    radius: int = Field(default=15, ge=0, le=60)

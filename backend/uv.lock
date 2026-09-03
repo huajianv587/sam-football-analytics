@@ -2456,6 +2456,7 @@ dependencies = [
     { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "supabase" },
     { name = "uvicorn", extra = ["standard"] },
+    { name = "websockets" },
 ]
 
 [package.optional-dependencies]
@@ -2493,6 +2494,7 @@ requires-dist = [
     { name = "supabase", specifier = ">=2.18" },
     { name = "ultralytics", marker = "extra == 'live'", specifier = "==8.4.138" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.35" },
+    { name = "websockets", specifier = ">=15.0" },
 ]
 provides-extras = ["inference", "live", "test"]
 

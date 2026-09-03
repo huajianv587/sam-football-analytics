@@ -63,6 +63,14 @@ if [[ ! -s "$RUNTIME_DIR/checkpoints/yolo11s-seg.pt" ]]; then
 fi
 echo "1caa81c0195412efa411b632bcfb8c184939dddb6ae41f6a80c41b211ff257c3  $RUNTIME_DIR/checkpoints/yolo11s-seg.pt" | sha256sum -c -
 
+if [[ ! -s "$RUNTIME_DIR/checkpoints/yolo11m-seg.pt" ]]; then
+  (
+    cd "$RUNTIME_DIR/checkpoints"
+    conda run -p "$ENV_DIR" python -c 'from ultralytics import YOLO; YOLO("yolo11m-seg.pt")'
+  )
+fi
+echo "eb9a06f63e2206c35d68d839b08c362429ebecf933ad54c1ad68b2fd001c17cf  $RUNTIME_DIR/checkpoints/yolo11m-seg.pt" | sha256sum -c -
+
 echo "SAM 2 runtime ready at $RUNTIME_DIR"
 
 ROOT_DIR="$(dirname "$RUNTIME_DIR")"
@@ -183,6 +191,7 @@ sha256sum "$GSR_RUNTIME_DIR/pretrained_models/yolo/yolo_v8x6_finetuned.pt" \
   "$RUNTIME_DIR/checkpoints/sam2.1_hiera_base_plus.pt" \
   "$RUNTIME_DIR/checkpoints/sam2.1_hiera_large.pt" \
   "$RUNTIME_DIR/checkpoints/yolo11s-seg.pt" \
+  "$RUNTIME_DIR/checkpoints/yolo11m-seg.pt" \
   > "$ROOT_DIR/MODEL_SHA256SUMS"
 
 echo "Soccer game-state runtime ready at $GSR_RUNTIME_DIR"

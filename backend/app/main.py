@@ -16,7 +16,10 @@ from .schemas import (
     IdentityUpdateRequest,
     JobResponse,
     RefinementResponse,
+    VideoRefineRequest,
+    VideoSessionResponse,
 )
+from live.video_sessions import VideoSessionManager
 from .supabase_gateway import SupabaseGateway
 
 app = FastAPI(title="SAM Football Analytics API", version="0.1.0")
@@ -30,6 +33,7 @@ app.add_middleware(
 )
 
 _runner: JobRunner | None = None
+_video_sessions = VideoSessionManager()
 
 
 def runner() -> JobRunner:
@@ -42,6 +46,80 @@ def runner() -> JobRunner:
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     return HealthResponse()
+
+
+def video_session_response(session) -> VideoSessionResponse:
+    return VideoSessionResponse(
+        session_id=session.session_id,
+        filename=session.filename,
+        state=session.state,
+        stage=session.stage,
+        progress=session.progress,
+        processed_frames=session.processed_frames,
+        total_frames=session.total_frames,
+        duration_s=session.duration_s,
+        fps=session.fps,
+        width=session.width,
+        height=session.height,
+        track_count=session.track_count,
+        message=session.message,
+    )
+
+
+@app.post("/v1/live/video-sessions", response_model=VideoSessionResponse, status_code=202)
+async def create_video_session(video: UploadFile = File(...)) -> VideoSessionResponse:
+    content = await video.read(50 * 1024 * 1024 + 1)
+    if not content:
+        raise HTTPException(status_code=422, detail="Video is empty")
+    if len(content) > 50 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Video size must be 50 MB or less")
+    try:
+        session = _video_sessions.create(content, video.filename or "video.mp4")
+    except ValueError as exc:
+        raise HTTPException(status_code=415, detail=str(exc)) from exc
+    return video_session_response(session)
+
+
+@app.get("/v1/live/video-sessions/{session_id}", response_model=VideoSessionResponse)
+async def video_session_status(session_id: str) -> VideoSessionResponse:
+    try:
+        return video_session_response(_video_sessions.status(session_id))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/v1/live/video-sessions/{session_id}/frames")
+async def video_session_frames(session_id: str, start: int = 0, end: int = 90) -> dict:
+    try:
+        return {"session_id": session_id, "frames": _video_sessions.frame_batch(session_id, start, end)}
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/v1/live/video-sessions/{session_id}/tracks/{track_id}/refine")
+async def refine_video_track(
+    session_id: str, track_id: int, request: VideoRefineRequest
+) -> dict:
+    try:
+        return await _video_sessions.refine(
+            session_id, track_id, request.center_frame, request.radius
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/v1/live/video-sessions/{session_id}/tracks/{track_id}/refine")
+async def video_track_refinement_status(
+    session_id: str, track_id: int, center_frame: int = 0, radius: int = 15
+) -> dict:
+    try:
+        return _video_sessions.refinement_status(session_id, track_id, center_frame, radius)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.post("/v1/face-profiles", response_model=FaceProfileResponse, status_code=201)

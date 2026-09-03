@@ -1,309 +1,59 @@
 "use client";
 
-import { Camera, CircleStop, Play, Radio, Upload, Users } from "lucide-react";
+import { Camera, CircleStop, Pause, Play, Radio, RotateCcw, SkipBack, SkipForward, Upload, Users } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import {
-  liveFramePacket,
-  smallestLiveTrackAt,
-  type LiveDisplayMode,
-  type LiveFrame,
-  type LiveStatus,
-  type LiveTrack,
-} from "@/lib/live";
+import { liveFramePacket, smallestLiveTrackAt, type LiveDisplayMode, type LiveFrame, type LiveStatus, type LiveTrack } from "@/lib/live";
 
-const COLORS = ["#a7f45f", "#75d8ff", "#ffbd66", "#ce86ff", "#ff7b73", "#50e3b2"];
+const COLORS = ["#5fbe42", "#2583c5", "#ef9d36", "#8b5cf6", "#e85d75", "#16a085"];
 const TARGET_FPS = 15;
+const API_URL = process.env.NEXT_PUBLIC_INFERENCE_API_URL ?? "http://127.0.0.1:8010";
+type SourceKind = "none" | "video" | "camera";
+type VideoState = "idle" | "queued" | "running" | "ready" | "failed";
 
 export function LiveAnalyzer() {
   const liveUrl = process.env.NEXT_PUBLIC_LIVE_WS_URL ?? "ws://127.0.0.1:8010/v1/live/ws";
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const captureRef = useRef<HTMLCanvasElement>(null);
-  const outputRef = useRef<HTMLCanvasElement>(null);
-  const socketRef = useRef<WebSocket | null>(null);
-  const runningRef = useRef(false);
-  const frameIdRef = useRef(0);
-  const lastSentRef = useRef(0);
-  const pendingRef = useRef(new Map<number, ImageBitmap>());
-  const tracksRef = useRef<LiveTrack[]>([]);
-  const [sourceUrl, setSourceUrl] = useState("");
-  const [sourceName, setSourceName] = useState("");
-  const [state, setState] = useState<"idle" | "connecting" | "ready" | "running" | "error">("idle");
-  const [message, setMessage] = useState("Select a video or field camera to start.");
-  const [displayMode, setDisplayMode] = useState<LiveDisplayMode>("all_masks");
-  const displayModeRef = useRef<LiveDisplayMode>("all_masks");
-  const [selectedId, setSelectedId] = useState<number | null>(null);
-  const selectedIdRef = useRef<number | null>(null);
-  const [tracks, setTracks] = useState<LiveTrack[]>([]);
-  const [performance, setPerformance] = useState({ fps: 0, latency: 0 });
+  const videoRef = useRef<HTMLVideoElement>(null), fileInputRef = useRef<HTMLInputElement>(null), captureRef = useRef<HTMLCanvasElement>(null), outputRef = useRef<HTMLCanvasElement>(null), socketRef = useRef<WebSocket | null>(null);
+  const runningRef = useRef(false), pausedRef = useRef(false), frameIdRef = useRef(0), lastSentRef = useRef(0);
+  const pendingRef = useRef(new Map<number, ImageBitmap>()), tracksRef = useRef<LiveTrack[]>([]), videoFramesRef = useRef(new Map<number, LiveFrame>()), samMasksRef = useRef(new Map<number, Array<[number, number]>>());
+  const sourceKindRef = useRef<SourceKind>("none"), videoSessionRef = useRef(""), currentFrameRef = useRef(0), selectedIdRef = useRef<number | null>(null), displayModeRef = useRef<LiveDisplayMode>("all_masks");
+  const [sourceUrl, setSourceUrl] = useState(""), [sourceName, setSourceName] = useState(""), [sourceKind, setSourceKind] = useState<SourceKind>("none");
+  const [state, setState] = useState<"idle" | "connecting" | "ready" | "running" | "error">("idle"), [videoState, setVideoState] = useState<VideoState>("idle"), [videoSessionId, setVideoSessionId] = useState(""), [videoProgress, setVideoProgress] = useState(0), [videoFps, setVideoFps] = useState(TARGET_FPS);
+  const [message, setMessage] = useState("Select a video file or field camera to begin."), [displayMode, setDisplayMode] = useState<LiveDisplayMode>("all_masks"), [selectedId, setSelectedId] = useState<number | null>(null), [tracks, setTracks] = useState<LiveTrack[]>([]), [performance, setPerformance] = useState({ fps: 0, latency: 0 }), [refineStatus, setRefineStatus] = useState("idle"), [videoPlaying, setVideoPlaying] = useState(false);
 
-  useEffect(() => () => {
-    runningRef.current = false;
-    socketRef.current?.close();
-    for (const bitmap of pendingRef.current.values()) bitmap.close();
-    const stream = videoRef.current?.srcObject as MediaStream | null;
-    for (const track of stream?.getTracks() ?? []) track.stop();
-  }, []);
+  useEffect(() => () => { runningRef.current = false; socketRef.current?.close(); for (const bitmap of pendingRef.current.values()) bitmap.close(); const stream = videoRef.current?.srcObject as MediaStream | null; for (const track of stream?.getTracks() ?? []) track.stop(); }, []);
   useEffect(() => () => { if (sourceUrl) URL.revokeObjectURL(sourceUrl); }, [sourceUrl]);
-  useEffect(() => { displayModeRef.current = displayMode; }, [displayMode]);
-  useEffect(() => { selectedIdRef.current = selectedId; }, [selectedId]);
+  useEffect(() => { displayModeRef.current = displayMode; redrawCurrentVideo(); }, [displayMode]);
+  useEffect(() => { selectedIdRef.current = selectedId; redrawCurrentVideo(); }, [selectedId]);
+  useEffect(() => { sourceKindRef.current = sourceKind; }, [sourceKind]);
+  useEffect(() => { videoSessionRef.current = videoSessionId; }, [videoSessionId]);
 
-  function chooseVideo(file: File | undefined) {
-    if (!file) return;
-    if (fileInputRef.current) fileInputRef.current.value = "";
-    stop();
-    if (sourceUrl) URL.revokeObjectURL(sourceUrl);
-    const url = URL.createObjectURL(file);
-    setSourceUrl(url);
-    setSourceName(file.name);
-    setState("idle");
-    setMessage("Video ready. Connect to the A40 live service.");
-  }
+  function chooseVideo(file: File | undefined) { if (!file) return; stop(); if (sourceUrl) URL.revokeObjectURL(sourceUrl); const url = URL.createObjectURL(file); setSourceUrl(url); setSourceName(file.name); setSourceKind("video"); sourceKindRef.current = "video"; setVideoState("idle"); setVideoSessionId(""); setVideoProgress(0); videoFramesRef.current.clear(); setTracks([]); tracksRef.current = []; setMessage("Video loaded. Precompute the fixed analysis timeline before playback."); window.setTimeout(() => videoRef.current?.load(), 0); }
+  async function precomputeVideo() { if (!sourceUrl || sourceKindRef.current !== "video") return; const blob = await fetch(sourceUrl).then((response) => response.blob()); const form = new FormData(); form.append("video", blob, sourceName || "video.mp4"); setVideoState("queued"); setState("connecting"); setMessage("Uploading video and queueing A40 precompute…"); try { const response = await fetch(`${API_URL}/v1/live/video-sessions`, { method: "POST", body: form }); if (!response.ok) throw new Error(`Upload failed (${response.status})`); const session = await response.json() as { session_id: string; fps: number }; setVideoSessionId(session.session_id); videoSessionRef.current = session.session_id; setVideoFps(session.fps || TARGET_FPS); await pollVideoSession(session.session_id); } catch (error) { setVideoState("failed"); setState("error"); setMessage(error instanceof Error ? error.message : "Video analysis failed."); } }
+  async function pollVideoSession(sessionId: string) { for (;;) { const response = await fetch(`${API_URL}/v1/live/video-sessions/${sessionId}`); if (!response.ok) throw new Error("Unable to read analysis status"); const status = await response.json() as { state: VideoState; progress: number; processed_frames: number; total_frames: number; fps: number; message?: string }; setVideoState(status.state); setVideoProgress(status.progress); setVideoFps(status.fps || TARGET_FPS); setMessage(status.state === "ready" ? "Analysis ready. Use the native timeline to play, pause, or seek." : `${status.state.toUpperCase()} · ${status.processed_frames}/${status.total_frames} frames`); if (status.state === "ready") { await loadVideoFrames(sessionId, status.total_frames); setState("ready"); return; } if (status.state === "failed") throw new Error(status.message || "A40 analysis failed"); await new Promise((resolve) => window.setTimeout(resolve, 700)); } }
+  async function loadVideoFrames(sessionId: string, total: number) { videoFramesRef.current.clear(); for (let start = 0; start < total; start += 180) { const end = Math.min(total, start + 180); const response = await fetch(`${API_URL}/v1/live/video-sessions/${sessionId}/frames?start=${start}&end=${end}`); if (!response.ok) throw new Error("Unable to load indexed frame results"); const data = await response.json() as { frames: LiveFrame[] }; for (const frame of data.frames) videoFramesRef.current.set(frame.frame_id, frame); } updateVideoFrame(0); }
+  async function refineSelected(trackId: number, center: number) { const sessionId = videoSessionRef.current; if (!sessionId) return; const radius = 15; setRefineStatus("queued"); const response = await fetch(`${API_URL}/v1/live/video-sessions/${sessionId}/tracks/${trackId}/refine`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ center_frame: center, radius }) }); if (!response.ok) { setRefineStatus("failed"); return; } for (;;) { const statusResponse = await fetch(`${API_URL}/v1/live/video-sessions/${sessionId}/tracks/${trackId}/refine?center_frame=${center}&radius=${radius}`); const result = await statusResponse.json() as { state: string; frames?: Array<{ frame: number; mask: Array<[number, number]> }> }; setRefineStatus(result.state); if (result.state === "ready") { for (const item of result.frames || []) samMasksRef.current.set(item.frame, item.mask); redrawCurrentVideo(); return; } if (result.state === "failed") return; await new Promise((resolve) => window.setTimeout(resolve, 500)); } }
+  async function useCamera() { stop(); try { const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 }, audio: false }); if (!videoRef.current) return; videoRef.current.srcObject = stream; setSourceUrl(""); setSourceName("Field camera"); setSourceKind("camera"); sourceKindRef.current = "camera"; await videoRef.current.play(); connect(); } catch (error) { setState("error"); setMessage(error instanceof Error ? error.message : "Camera permission was denied."); } }
+  function connect() { const video = videoRef.current; if (!video || sourceKindRef.current !== "camera") return; stopSocket(); setState("connecting"); setMessage("Connecting to the A40 inference service…"); const socket = new WebSocket(liveUrl); socketRef.current = socket; socket.binaryType = "arraybuffer"; socket.onmessage = (event) => { const payload = JSON.parse(event.data) as LiveFrame | LiveStatus; if (payload.type === "status") { setMessage(payload.message); if (payload.state === "error") setState("error"); if (payload.state === "ready") { setState("ready"); runningRef.current = true; void sendNextFrame(); } return; } renderLiveFrame(payload); setTracks(payload.tracks); tracksRef.current = payload.tracks; setPerformance({ fps: payload.processing_fps, latency: payload.inference_ms }); setState("running"); setMessage(`${payload.tracks.length} people · ${payload.processing_fps.toFixed(1)} FPS · ${payload.inference_ms.toFixed(0)} ms`); if (!pausedRef.current) window.setTimeout(() => void sendNextFrame(), 0); }; socket.onerror = () => { setState("error"); setMessage(`Unable to reach ${liveUrl}. Start the A40 live service and SSH tunnel.`); }; socket.onclose = () => { runningRef.current = false; }; }
+  async function sendNextFrame() { const socket = socketRef.current, video = videoRef.current, capture = captureRef.current; if (!runningRef.current || pausedRef.current || !socket || socket.readyState !== WebSocket.OPEN || !video || !capture) return; if (video.ended) return stop(); if (video.readyState < 2 || !video.videoWidth) return void window.setTimeout(() => void sendNextFrame(), 30); const wait = Math.max(0, 1000 / TARGET_FPS - (performanceNow() - lastSentRef.current)); if (wait > 1) return void window.setTimeout(() => void sendNextFrame(), wait); const width = Math.min(1280, video.videoWidth), height = Math.round(video.videoHeight * width / video.videoWidth); capture.width = width; capture.height = height; capture.getContext("2d", { alpha: false })?.drawImage(video, 0, 0, width, height); const frameId = ++frameIdRef.current; pendingRef.current.set(frameId, await createImageBitmap(capture)); const blob = await canvasBlob(capture); lastSentRef.current = performanceNow(); socket.send(liveFramePacket(frameId, performanceNow() / 1000, await blob.arrayBuffer())); }
+  function renderLiveFrame(frame: LiveFrame) { const canvas = outputRef.current, bitmap = pendingRef.current.get(frame.frame_id); if (!canvas || !bitmap) return; canvas.width = frame.width; canvas.height = frame.height; const context = canvas.getContext("2d"); if (!context) return; context.drawImage(bitmap, 0, 0, frame.width, frame.height); bitmap.close(); pendingRef.current.delete(frame.frame_id); drawOverlays(context, frame.tracks, displayModeRef.current, selectedIdRef.current); }
+  function updateVideoFrame(frameId: number) { const frame = videoFramesRef.current.get(frameId); if (!frame) return; currentFrameRef.current = frameId; tracksRef.current = frame.tracks; setTracks(frame.tracks); setPerformance({ fps: frame.processing_fps, latency: frame.inference_ms }); redrawCurrentVideo(); }
+  function redrawCurrentVideo() { if (sourceKindRef.current !== "video") return; const frame = videoFramesRef.current.get(currentFrameRef.current), canvas = outputRef.current; if (!frame || !canvas) return; canvas.width = frame.width; canvas.height = frame.height; const context = canvas.getContext("2d"); if (!context) return; context.clearRect(0, 0, frame.width, frame.height); const selected = selectedIdRef.current; const tracksForFrame = frame.tracks.map((track) => { const mask = selected === track.track_id ? samMasksRef.current.get(currentFrameRef.current) : undefined; return mask ? { ...track, mask, mask_source: "sam" as const } : track; }); drawOverlays(context, tracksForFrame, displayModeRef.current, selected); }
+  function selectAt(event: React.PointerEvent<HTMLDivElement>) { const canvas = outputRef.current, rect = event.currentTarget.getBoundingClientRect(); if (!canvas) return; const track = smallestLiveTrackAt(tracksRef.current, (event.clientX - rect.left) * canvas.width / rect.width, (event.clientY - rect.top) * canvas.height / rect.height); if (track) selectTrack(track.track_id); }
+  function selectTrack(trackId: number) { setSelectedId(trackId); selectedIdRef.current = trackId; if (sourceKindRef.current === "camera") socketRef.current?.send(JSON.stringify({ type: "select", track_id: trackId })); if (sourceKindRef.current === "video" && videoState === "ready") void refineSelected(trackId, currentFrameRef.current); redrawCurrentVideo(); }
+  function clearSelection() { setSelectedId(null); selectedIdRef.current = null; setRefineStatus("idle"); if (sourceKindRef.current === "camera") socketRef.current?.send(JSON.stringify({ type: "select", track_id: null })); redrawCurrentVideo(); }
+  function togglePlayback() { const video = videoRef.current; if (!video) return; if (sourceKind === "video") { if (videoState !== "ready") return; if (video.paused) void video.play(); else video.pause(); } else if (sourceKind === "camera") { if (pausedRef.current) resumeCamera(); else pauseCamera(); } }
+  function pauseCamera() { pausedRef.current = true; videoRef.current?.pause(); socketRef.current?.send(JSON.stringify({ type: "pause" })); setMessage("Camera paused. Resume to continue the same Track session."); }
+  function resumeCamera() { pausedRef.current = false; void videoRef.current?.play(); socketRef.current?.send(JSON.stringify({ type: "resume" })); void sendNextFrame(); }
+  function seekBy(seconds: number) { const video = videoRef.current; if (!video || sourceKind !== "video" || videoState !== "ready") return; video.currentTime = Math.max(0, Math.min(video.duration || 0, video.currentTime + seconds)); }
+  function stopSocket() { runningRef.current = false; pausedRef.current = false; socketRef.current?.close(); socketRef.current = null; for (const bitmap of pendingRef.current.values()) bitmap.close(); pendingRef.current.clear(); }
+  function stop() { stopSocket(); const video = videoRef.current; video?.pause(); setVideoPlaying(false); if (video?.srcObject) { for (const track of (video.srcObject as MediaStream).getTracks()) track.stop(); video.srcObject = null; } setTracks([]); tracksRef.current = []; setSelectedId(null); selectedIdRef.current = null; setRefineStatus("idle"); if (sourceKindRef.current === "camera") { setSourceKind("none"); sourceKindRef.current = "none"; } setState("idle"); }
+  function handleVideoTime() { const video = videoRef.current; if (!video || videoState !== "ready") return; updateVideoFrame(Math.max(0, Math.round(video.currentTime * videoFps))); }
 
-  async function useCamera() {
-    stop();
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 }, audio: false });
-      if (!videoRef.current) return;
-      videoRef.current.srcObject = stream;
-      setSourceUrl("");
-      setSourceName("Field camera");
-      await videoRef.current.play();
-      connect();
-    } catch (error) {
-      setState("error");
-      setMessage(error instanceof Error ? error.message : "Camera permission was denied.");
-    }
-  }
-
-  function connect() {
-    const video = videoRef.current;
-    if (!video || (!sourceUrl && !video.srcObject)) return;
-    stopSocket();
-    setState("connecting");
-    setMessage("Connecting to the A40 inference service…");
-    const socket = new WebSocket(liveUrl);
-    socketRef.current = socket;
-    socket.binaryType = "arraybuffer";
-    socket.onmessage = (event) => {
-      const payload = JSON.parse(event.data) as LiveFrame | LiveStatus;
-      if (payload.type === "status") {
-        setMessage(payload.message);
-        if (payload.state === "error") setState("error");
-        if (payload.state === "ready") {
-          setState("ready");
-          runningRef.current = true;
-          void video.play();
-          void sendNextFrame();
-        }
-        return;
-      }
-      renderFrame(payload);
-      setTracks(payload.tracks);
-      tracksRef.current = payload.tracks;
-      setPerformance({ fps: payload.processing_fps, latency: payload.inference_ms });
-      setState("running");
-      setMessage(`${payload.tracks.length} objects · ${payload.processing_fps.toFixed(1)} processing FPS`);
-      window.setTimeout(() => void sendNextFrame(), 0);
-    };
-    socket.onerror = () => {
-      setState("error");
-      setMessage(`Unable to reach ${liveUrl}. Start the A40 live service and SSH tunnel.`);
-    };
-    socket.onclose = () => { runningRef.current = false; };
-  }
-
-  async function sendNextFrame() {
-    const socket = socketRef.current;
-    const video = videoRef.current;
-    const capture = captureRef.current;
-    if (!runningRef.current || !socket || socket.readyState !== WebSocket.OPEN || !video || !capture) return;
-    if (video.ended) return stop();
-    if (video.readyState < 2 || !video.videoWidth) {
-      return window.setTimeout(() => void sendNextFrame(), 30);
-    }
-    const wait = Math.max(0, 1000 / TARGET_FPS - (performanceNow() - lastSentRef.current));
-    if (wait > 1) return window.setTimeout(() => void sendNextFrame(), wait);
-    const width = Math.min(1280, video.videoWidth);
-    const height = Math.round(video.videoHeight * width / video.videoWidth);
-    capture.width = width;
-    capture.height = height;
-    capture.getContext("2d", { alpha: false })?.drawImage(video, 0, 0, width, height);
-    const frameId = ++frameIdRef.current;
-    pendingRef.current.set(frameId, await createImageBitmap(capture));
-    const blob = await canvasBlob(capture);
-    const jpeg = await blob.arrayBuffer();
-    lastSentRef.current = performanceNow();
-    socket.send(liveFramePacket(frameId, performanceNow() / 1000, jpeg));
-  }
-
-  function renderFrame(frame: LiveFrame) {
-    const canvas = outputRef.current;
-    const bitmap = pendingRef.current.get(frame.frame_id);
-    if (!canvas || !bitmap) return;
-    canvas.width = frame.width;
-    canvas.height = frame.height;
-    const context = canvas.getContext("2d");
-    if (!context) return;
-    context.drawImage(bitmap, 0, 0, frame.width, frame.height);
-    bitmap.close();
-    pendingRef.current.delete(frame.frame_id);
-    for (const [pendingId, pending] of pendingRef.current) {
-      if (pendingId < frame.frame_id) { pending.close(); pendingRef.current.delete(pendingId); }
-    }
-    for (const track of frame.tracks) drawTrack(context, track, displayModeRef.current, selectedIdRef.current);
-  }
-
-  function selectAt(event: React.PointerEvent<HTMLCanvasElement>) {
-    const canvas = event.currentTarget;
-    const rect = canvas.getBoundingClientRect();
-    const track = smallestLiveTrackAt(
-      tracksRef.current,
-      (event.clientX - rect.left) * canvas.width / rect.width,
-      (event.clientY - rect.top) * canvas.height / rect.height,
-    );
-    if (!track) return;
-    selectTrack(track.track_id);
-  }
-
-  function selectTrack(trackId: number) {
-    setSelectedId(trackId);
-    socketRef.current?.send(JSON.stringify({ type: "select", track_id: trackId }));
-  }
-
-  function clearSelection() {
-    setSelectedId(null);
-    socketRef.current?.send(JSON.stringify({ type: "select", track_id: null }));
-  }
-
-  function stopSocket() {
-    runningRef.current = false;
-    socketRef.current?.close();
-    socketRef.current = null;
-    for (const bitmap of pendingRef.current.values()) bitmap.close();
-    pendingRef.current.clear();
-  }
-
-  function stop() {
-    stopSocket();
-    const video = videoRef.current;
-    video?.pause();
-    if (video?.srcObject) {
-      for (const track of (video.srcObject as MediaStream).getTracks()) track.stop();
-      video.srcObject = null;
-    }
-    setTracks([]);
-    tracksRef.current = [];
-    setSelectedId(null);
-    if (state !== "idle") setState("idle");
-  }
-
-  const selected = tracks.find((track) => track.track_id === selectedId) ?? null;
-  const active = state === "connecting" || state === "ready" || state === "running";
-  return (
-    <div className="container live-shell">
-      <header className="offline-heading">
-        <div><span className="eyebrow">GENERIC PERSON INTELLIGENCE / LIVE</span><h1>Segment everyone. Track every ID. Refine one with SAM.</h1><p>Sport-agnostic person instance segmentation for video files and field cameras. Lightweight Masks stay live for everyone; SAM follows the selected Track.</p></div>
-        <span className={`live-indicator ${state}`}><Radio size={13} /> {state.toUpperCase()}</span>
-      </header>
-
-      <div className="live-grid">
-        <section className="panel live-main">
-          <div className="live-stage">
-            <video ref={videoRef} src={sourceUrl || undefined} muted playsInline loop className={state === "running" ? "source-hidden" : ""} />
-            <canvas ref={outputRef} onPointerDown={selectAt} />
-            {!sourceName && <div className="live-empty"><Users size={38} /><strong>Select a real-time source</strong><span>Any sport · any scene containing people</span></div>}
-          </div>
-          <canvas ref={captureRef} hidden />
-          <div className="live-controls">
-            <label className="button button-secondary"><Upload size={14} /> VIDEO FILE<input ref={fileInputRef} hidden type="file" accept="video/*" onChange={(event) => chooseVideo(event.target.files?.[0])} /></label>
-            <button className="button button-secondary" onClick={useCamera}><Camera size={14} /> FIELD CAMERA</button>
-            {!active ? <button className="button button-primary" disabled={!sourceName} onClick={connect}><Play size={14} /> START LIVE</button> : <button className="button button-danger" onClick={stop}><CircleStop size={14} /> STOP</button>}
-            <span className="live-source-name">{sourceName || "No source"}</span>
-          </div>
-          <div className="tabs live-tabs">
-            {(["all_masks", "selected_only", "boxes"] as LiveDisplayMode[]).map((mode) => <button key={mode} className={`tab ${displayMode === mode ? "active" : ""}`} onClick={() => setDisplayMode(mode)}>{mode.replace("_", " ").toUpperCase()}</button>)}
-          </div>
-          <p className="live-message">{message}</p>
-        </section>
-
-        <aside className="live-side">
-          <section className="panel live-summary">
-            <span className="eyebrow">LIVE TELEMETRY</span>
-            <div className="stat-grid"><div className="stat"><span>OBJECTS</span><strong>{tracks.length}</strong></div><div className="stat"><span>PROCESSING</span><strong>{performance.fps.toFixed(1)} FPS</strong></div><div className="stat"><span>INFERENCE</span><strong>{performance.latency.toFixed(0)} ms</strong></div><div className="stat"><span>MODE</span><strong>{displayMode === "boxes" ? "BOX" : "MASK"}</strong></div></div>
-          </section>
-          <section className="panel player-card">
-            {selected ? <>
-              <div className="player-identity"><span className="jersey-badge">{selected.track_id}</span><div><h2>Track {selected.track_id}</h2><p>{selected.mask_source === "sam" ? "SAM refined Mask" : "Lightweight Mask"}</p></div></div>
-              <div className="metric-row"><span>Class</span><strong>{selected.class_name}</strong></div>
-              <div className="metric-row"><span>Identity</span><strong>Unidentified</strong></div>
-              <div className="metric-row"><span>Confidence</span><strong>{Math.round(selected.confidence * 100)}%</strong></div>
-              <div className="metric-row"><span>Pixel speed</span><strong>{selected.speed_px_s.toFixed(1)} px/s</strong></div>
-              <div className="metric-row"><span>Metric speed</span><strong>{selected.speed_kmh === null ? "Calibration required" : `${selected.speed_kmh.toFixed(1)} km/h`}</strong></div>
-              <button className="button button-secondary live-clear" onClick={clearSelection}>CLEAR SELECTION</button>
-            </> : <div className="live-unselected"><Users size={30} /><h3>Select any person</h3><p>All people use lightweight Masks. Clicking a Track activates SAM refinement for that person only.</p></div>}
-          </section>
-          {tracks.length > 0 && <section className="panel live-track-panel"><div className="panel-title"><h3>VISIBLE TRACKS</h3><span>{tracks.length}</span></div><div className="live-track-list">{tracks.map((track) => <button key={track.track_id} className={`live-track-chip ${selectedId === track.track_id ? "active" : ""}`} onClick={() => selectTrack(track.track_id)}>ID {track.track_id}<span>{Math.round(track.confidence * 100)}%</span></button>)}</div></section>}
-          <p className="micro muted">Browser video and camera are live now. RTSP/ONVIF/HLS gateways use the same frame protocol when deployed beside the camera.</p>
-        </aside>
-      </div>
-    </div>
-  );
+  const selected = tracks.find((track) => track.track_id === selectedId) ?? null, active = sourceKind === "camera" ? state === "connecting" || state === "ready" || state === "running" : videoState === "queued" || videoState === "running";
+  return <div className="container live-shell"><header className="offline-heading"><div><span className="eyebrow">GENERIC PERSON INTELLIGENCE / LIVE</span><h1>Segment everyone. Track every ID. Refine one with SAM.</h1><p>Lightweight instance Masks and stable IDs stay visible for every person. Click one Track for pixel-level SAM refinement.</p></div><span className={`live-indicator ${state}`}><Radio size={13} /> {sourceKind === "video" ? videoState.toUpperCase() : state.toUpperCase()}</span></header><div className="live-grid"><section className="panel live-main"><div className={`live-stage ${sourceKind === "video" ? "video-mode" : ""}`}><video ref={videoRef} src={sourceUrl || undefined} muted playsInline preload="metadata" controls={sourceKind === "video" && videoState === "ready"} className={sourceKind === "camera" && state === "running" ? "source-hidden" : ""} onPlay={() => { if (sourceKind === "video") { setVideoPlaying(true); setMessage("Playing fixed analysis timeline."); } }} onPause={() => { if (sourceKind === "video") { setVideoPlaying(false); setMessage("Paused. Drag the native timeline to inspect any indexed frame."); } }} onTimeUpdate={handleVideoTime} onSeeked={handleVideoTime} /><canvas ref={outputRef} /><div className="live-hit-layer" onPointerUp={selectAt} />{!sourceName && <div className="live-empty"><Users size={38} /><strong>Select a video or field camera</strong><span>Any sport · any scene containing people</span></div>}</div><canvas ref={captureRef} hidden /><div className="live-controls"><label className="button button-secondary"><Upload size={14} /> VIDEO FILE<input ref={fileInputRef} hidden type="file" accept="video/*" onChange={(event) => chooseVideo(event.target.files?.[0])} /></label><button className="button button-secondary" onClick={useCamera}><Camera size={14} /> FIELD CAMERA</button>{sourceKind === "video" ? <><button className="button button-primary" disabled={videoState !== "idle" && videoState !== "ready"} onClick={videoState === "ready" ? togglePlayback : precomputeVideo}>{videoState === "ready" ? (videoPlaying ? <><Pause size={14} /> PAUSE</> : <><Play size={14} /> PLAY</>) : <><Play size={14} /> PRECOMPUTE ANALYSIS</>}</button><button className="button button-secondary" disabled={videoState !== "ready"} onClick={() => seekBy(-5)}><SkipBack size={14} /> -5S</button><button className="button button-secondary" disabled={videoState !== "ready"} onClick={() => seekBy(5)}><SkipForward size={14} /> +5S</button><button className="button button-secondary" disabled={videoState !== "ready"} onClick={() => { if (videoRef.current) videoRef.current.currentTime = 0; }}><RotateCcw size={14} /> RESTART</button></> : sourceKind === "camera" ? <button className="button button-primary" onClick={active ? togglePlayback : connect}>{active ? (pausedRef.current ? <><Play size={14} /> RESUME</> : <><Pause size={14} /> PAUSE</>) : <><Play size={14} /> START CAMERA</>}</button> : null}{active && sourceKind === "camera" && <button className="button button-danger" onClick={stop}><CircleStop size={14} /> STOP</button>}<span className="live-source-name">{sourceName || "No source"}</span></div><div className="tabs live-tabs">{(["all_masks", "selected_only", "boxes"] as LiveDisplayMode[]).map((mode) => <button key={mode} className={`tab ${displayMode === mode ? "active" : ""}`} onClick={() => setDisplayMode(mode)}>{mode.replace("_", " ").toUpperCase()}</button>)}</div><p className="live-message">{message}{sourceKind === "video" && videoState !== "idle" && <span className="video-progress"> {videoProgress.toFixed(0)}%</span>}</p></section><aside className="live-side"><section className="panel live-summary"><span className="eyebrow">LIVE TELEMETRY</span><div className="stat-grid"><div className="stat"><span>VISIBLE PEOPLE</span><strong>{tracks.length}</strong></div><div className="stat"><span>PROCESSING</span><strong>{performance.fps.toFixed(1)} FPS</strong></div><div className="stat"><span>INFERENCE</span><strong>{performance.latency.toFixed(0)} ms</strong></div><div className="stat"><span>MODEL</span><strong>YOLO11M-SEG</strong></div></div></section><section className="panel player-card">{selected ? <><div className="player-identity"><span className="jersey-badge">{selected.track_id}</span><div><h2>Track {selected.track_id}</h2><p>{selected.mask_source === "sam" ? "SAM refined Mask" : `${selected.mask_source === "predicted" ? "Predicted" : "Lightweight"} Mask`} · {refineStatus === "running" ? "SAM REFINING" : refineStatus === "ready" ? "SAM READY" : (selected.track_state ?? "detected").toUpperCase()}</p></div></div><div className="metric-row"><span>Class</span><strong>{selected.class_name}</strong></div><div className="metric-row"><span>Identity</span><strong>Unidentified</strong></div><div className="metric-row"><span>Confidence</span><strong>{Math.round(selected.confidence * 100)}%</strong></div><div className="metric-row"><span>Pixel speed</span><strong>{selected.speed_px_s.toFixed(1)} px/s</strong></div><button className="button button-secondary live-clear" onClick={clearSelection}>CLEAR SELECTION</button></> : <div className="live-unselected"><Users size={30} /><h3>Select any person</h3><p>Everyone has a lightweight Mask. Click a Track to refine that person with SAM.</p></div>}</section>{tracks.length > 0 && <section className="panel live-track-panel"><div className="panel-title"><h3>VISIBLE TRACKS</h3><span>{tracks.length}</span></div><div className="live-track-list">{tracks.map((track) => <button key={track.track_id} className={`live-track-chip ${selectedId === track.track_id ? "active" : ""}`} onClick={() => selectTrack(track.track_id)}>ID {track.track_id}<span>{track.track_state === "predicted" ? "PRED" : `${Math.round(track.confidence * 100)}%`}</span></button>)}</div></section>}<p className="micro muted">Video results are indexed before playback, so pause and seek never change public Track IDs.</p></aside></div></div>;
 }
 
-function drawTrack(context: CanvasRenderingContext2D, track: LiveTrack, mode: LiveDisplayMode, selectedId: number | null) {
-  const selected = track.track_id === selectedId;
-  const showMask = mode === "all_masks" || (mode === "selected_only" && selected);
-  const color = selected ? "#a7f45f" : COLORS[Math.abs(track.track_id) % COLORS.length];
-  if (showMask && track.mask.length > 2) {
-    context.beginPath();
-    track.mask.forEach(([x, y], index) => index ? context.lineTo(x, y) : context.moveTo(x, y));
-    context.closePath();
-    context.globalAlpha = selected && track.mask_source === "sam" ? 0.58 : 0.28;
-    context.fillStyle = color;
-    context.fill();
-    context.globalAlpha = 1;
-  }
-  const [x1, y1, x2, y2] = track.bbox;
-  context.strokeStyle = color;
-  context.lineWidth = selected ? 3 : 1.2;
-  context.strokeRect(x1, y1, x2 - x1, y2 - y1);
-  context.fillStyle = "rgba(3, 10, 8, .85)";
-  const label = `${track.class_name} · ID ${track.track_id}`;
-  context.font = "700 12px sans-serif";
-  const labelWidth = Math.max(58, context.measureText(label).width + 10);
-  context.fillRect(x1, Math.max(0, y1 - 18), labelWidth, 18);
-  context.fillStyle = color;
-  context.fillText(label, x1 + 5, Math.max(13, y1 - 5));
-  if (selected && track.trail.length > 1) {
-    // A tracker can briefly reuse an ID after a difficult association. Do
-    // not expose the resulting impossible cross-field jump as a trajectory.
-    const maxJump = Math.max(context.canvas.width, context.canvas.height) * 0.18;
-    context.strokeStyle = "#a7f45f";
-    context.lineWidth = 3;
-    let segment: Array<[number, number]> = [];
-    const drawSegment = () => {
-      if (segment.length < 2) return;
-      context.beginPath();
-      segment.forEach(([x, y], index) => index ? context.lineTo(x, y) : context.moveTo(x, y));
-      context.stroke();
-    };
-    track.trail.forEach((point) => {
-      const previous = segment.at(-1);
-      if (previous && Math.hypot(point[0] - previous[0], point[1] - previous[1]) > maxJump) {
-        drawSegment();
-        segment = [];
-      }
-      segment.push(point);
-    });
-    drawSegment();
-  }
-}
-
-function canvasBlob(canvas: HTMLCanvasElement) {
-  return new Promise<Blob>((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("Unable to encode frame")), "image/jpeg", 0.82));
-}
-
-function performanceNow() {
-  return window.performance.now();
-}
+function drawOverlays(context: CanvasRenderingContext2D, tracks: LiveTrack[], mode: LiveDisplayMode, selectedId: number | null) { for (const track of tracks) drawTrack(context, track, mode, selectedId); }
+function drawTrack(context: CanvasRenderingContext2D, track: LiveTrack, mode: LiveDisplayMode, selectedId: number | null) { const selected = track.track_id === selectedId, showMask = mode === "all_masks" || (mode === "selected_only" && selected), color = selected ? "#4caf31" : COLORS[Math.abs(track.track_id) % COLORS.length]; if (showMask && track.mask.length > 2) { context.beginPath(); track.mask.forEach(([x, y], index) => index ? context.lineTo(x, y) : context.moveTo(x, y)); context.closePath(); context.globalAlpha = selected && track.mask_source === "sam" ? 0.58 : 0.23; context.fillStyle = color; context.fill(); context.globalAlpha = 1; } const [x1, y1, x2, y2] = track.bbox; context.strokeStyle = color; context.lineWidth = selected ? 3 : 1.3; context.setLineDash(track.track_state === "predicted" ? [6, 4] : []); context.strokeRect(x1, y1, x2 - x1, y2 - y1); context.setLineDash([]); const label = `${track.class_name} · ID ${track.track_id}${track.track_state === "predicted" ? " · PRED" : ""}`; context.font = "700 12px sans-serif"; const labelWidth = Math.max(58, context.measureText(label).width + 10); context.fillStyle = "rgba(255,255,255,.92)"; context.fillRect(x1, Math.max(0, y1 - 18), labelWidth, 18); context.fillStyle = color; context.fillText(label, x1 + 5, Math.max(13, y1 - 5)); if (selected && track.trail.length > 1) { context.strokeStyle = "#4caf31"; context.lineWidth = 3; context.beginPath(); track.trail.forEach(([x, y], index) => index ? context.lineTo(x, y) : context.moveTo(x, y)); context.stroke(); } }
+function canvasBlob(canvas: HTMLCanvasElement) { return new Promise<Blob>((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("Unable to encode frame")), "image/jpeg", 0.82)); }
+function performanceNow() { return window.performance.now(); }

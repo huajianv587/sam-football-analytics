@@ -213,7 +213,9 @@ button { cursor: pointer; }
 .live-stage { position: relative; overflow: hidden; aspect-ratio: 16 / 9; border-radius: 13px; background: #020604; }
 .live-stage video, .live-stage > canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
 .live-stage video.source-hidden { visibility: hidden; }
-.live-stage > canvas { z-index: 2; cursor: crosshair; }
+.live-stage > canvas { z-index: 2; pointer-events: none; }
+.live-hit-layer { position: absolute; inset: 0 0 52px; z-index: 3; cursor: crosshair; touch-action: none; }
+.live-stage.video-mode video { background: #07110b; }
 .live-empty { position: absolute; inset: 0; z-index: 3; display: grid; place-items: center; align-content: center; gap: 8px; color: var(--muted); pointer-events: none; }
 .live-empty svg { color: var(--accent); }
 .live-empty strong { color: var(--text); font-size: 18px; }
@@ -228,6 +230,7 @@ button { cursor: pointer; }
 .live-tabs { width: max-content; margin-top: 10px; }
 .live-tabs .tab { font-size: 10px; font-weight: 800; letter-spacing: .04em; }
 .live-message { margin: 10px 2px 0; color: var(--muted); font-size: 11px; }
+.video-progress { margin-left: 8px; color: var(--accent); font-weight: 800; }
 .live-side { display: grid; gap: 14px; position: sticky; top: 82px; }
 .live-summary .eyebrow { font-size: 10px; }
 .live-summary .stat strong { font-size: 16px; }

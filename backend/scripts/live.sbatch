@@ -22,13 +22,14 @@ exec >"$SESSION_DIR/live.log" 2>&1
 
 module load anaconda/25.5.1 cuda/12.8.0
 export PYTHONPATH="$CODE_DIR:$RUNTIME_DIR/sam2"
-export LIVE_SEG_MODEL="${LIVE_SEG_MODEL:-$RUNTIME_DIR/checkpoints/yolo11s-seg.pt}"
+export LIVE_SEG_MODEL="${LIVE_SEG_MODEL:-$RUNTIME_DIR/checkpoints/yolo11m-seg.pt}"
 export LIVE_SAM_CHECKPOINT="${LIVE_SAM_CHECKPOINT:-$RUNTIME_DIR/checkpoints/sam2.1_hiera_base_plus.pt}"
 export LIVE_SAM_CONFIG="${LIVE_SAM_CONFIG:-configs/sam2.1/sam2.1_hiera_b+.yaml}"
 export LIVE_SAM_ENABLED="${LIVE_SAM_ENABLED:-true}"
 export LIVE_IMAGE_SIZE="${LIVE_IMAGE_SIZE:-960}"
-export LIVE_CONFIDENCE="${LIVE_CONFIDENCE:-0.15}"
-export LIVE_CLASSES="${LIVE_CLASSES:-person,cat,dog,bird,horse,sheep,cow,chair,couch,bed,dining table}"
+export LIVE_CONFIDENCE="${LIVE_CONFIDENCE:-0.10}"
+export LIVE_CLASSES="${LIVE_CLASSES:-person}"
+export LIVE_MAX_MISSING_FRAMES="${LIVE_MAX_MISSING_FRAMES:-45}"
 export LIVE_DEVICE="${LIVE_DEVICE:-0}"
 export YOLO_CONFIG_DIR="$RUNTIME_DIR/cache/ultralytics"
 export TORCH_HOME="$RUNTIME_DIR/torch-cache"

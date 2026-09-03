@@ -2,11 +2,16 @@ export type LiveDisplayMode = "all_masks" | "selected_only" | "boxes";
 
 export type LiveTrack = {
   track_id: number;
+  raw_tracker_id?: number | null;
   bbox: [number, number, number, number];
   confidence: number;
   class_name: string;
   mask: Array<[number, number]>;
-  mask_source: "lightweight" | "sam";
+  mask_source: "lightweight" | "predicted" | "sam";
+  track_state?: "detected" | "predicted";
+  first_frame?: number | null;
+  last_seen_frame?: number | null;
+  reassociation_count?: number;
   trail: Array<[number, number]>;
   speed_px_s: number;
   speed_kmh: number | null;
@@ -20,6 +25,7 @@ export type LiveFrame = {
   inference_ms: number;
   processing_fps: number;
   selected_id: number | null;
+  refined_mask?: Array<[number, number]>;
   tracks: LiveTrack[];
 };
 

@@ -29,7 +29,8 @@ async def health() -> dict:
         "status": "ok",
         "mode": "generic-person-instance-segmentation",
         "loaded": loaded,
-        "lightweight_model": os.getenv("LIVE_SEG_MODEL", "yolo11s-seg.pt"),
+        "lightweight_model": os.getenv("LIVE_SEG_MODEL", "yolo11m-seg.pt"),
+        "classes": [name.strip() for name in os.getenv("LIVE_CLASSES", "person").split(",") if name.strip()],
         "sam_enabled": os.getenv("LIVE_SAM_ENABLED", "true").lower() == "true",
     }
 
@@ -38,6 +39,7 @@ async def health() -> dict:
 async def live_stream(websocket: WebSocket) -> None:
     await websocket.accept()
     selected_id: int | None = None
+    refine_bbox: tuple[float, float, float, float] | None = None
     try:
         await websocket.send_json(LiveStatus(
             state="loading", message="Loading the generic person segmentation models"
@@ -55,8 +57,15 @@ async def live_stream(websocket: WebSocket) -> None:
                 control = json.loads(message["text"])
                 if control.get("type") == "select":
                     selected_id = control.get("track_id")
+                    refine_bbox = None
+                elif control.get("type") == "refine_box":
+                    selected_id = None
+                    values = control.get("bbox")
+                    if isinstance(values, list) and len(values) == 4:
+                        refine_bbox = tuple(float(value) for value in values)  # type: ignore[assignment]
                 elif control.get("type") == "reset":
                     selected_id = None
+                    refine_bbox = None
                     await asyncio.to_thread(live_engine.reset)
                 continue
             payload = message.get("bytes")
@@ -71,6 +80,7 @@ async def live_stream(websocket: WebSocket) -> None:
                 timestamp,
                 payload[FRAME_HEADER.size :],
                 selected_id,
+                refine_bbox,
             )
             await websocket.send_json(result.model_dump())
     except WebSocketDisconnect:

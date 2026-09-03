@@ -90,8 +90,9 @@ The script creates:
 
 - a Python 3.11 SAM environment with PyTorch/CUDA, EasyOCR, FFmpeg and the
   compiled SAM 2 CUDA extension;
-- Ultralytics `8.4.138`, `yolo11s-seg.pt`, FastAPI and Uvicorn for generic
-  all-person live instance segmentation;
+- Ultralytics `8.4.138`, default `yolo11m-seg.pt` plus an optional
+  `yolo11s-seg.pt` latency profile, FastAPI and Uvicorn for generic all-person
+  live instance segmentation;
 - a separate SoccerNet/SoccerMaster game-state environment for football YOLO
   and PnLCalib, plus legacy PRTReID/StrongSORT compatibility components;
 - version-pinned checkpoints and checksum manifests under scratch.

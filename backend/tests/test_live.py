@@ -73,7 +73,7 @@ def test_websocket_stream_selects_one_track_without_queuing_frames(monkeypatch) 
         def reset(self) -> None:
             pass
 
-        def process(self, frame_id, timestamp, jpeg, selected_id):
+        def process(self, frame_id, timestamp, jpeg, selected_id, refine_bbox=None):
             assert timestamp == 2.5
             assert jpeg == b"jpeg"
             return LiveFrame(
@@ -83,8 +83,8 @@ def test_websocket_stream_selects_one_track_without_queuing_frames(monkeypatch) 
                 inference_ms=10,
                 processing_fps=20,
                 selected_id=selected_id,
-                tracks=[],
-            )
+            tracks=[],
+        )
 
     monkeypatch.setattr(live_server, "engine", lambda: FakeEngine())
     with TestClient(live_server.app).websocket_connect("/v1/live/ws") as websocket:

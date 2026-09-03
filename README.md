@@ -3,7 +3,7 @@
 PitchVision is a two-mode person video intelligence system built for sports and
 general human scenes:
 
-- **Live:** a sport-agnostic instance-segmentation model produces a lightweight
+- **Live:** a sport-agnostic YOLO11m-seg instance-segmentation model produces a lightweight
   Mask, box and persistent Track ID for every visible person. Clicking one
   Track replaces only that contour with a SAM 2.1 Base+ refinement while every
   other person continues through the lightweight path.
@@ -11,8 +11,8 @@ general human scenes:
   geometry, precomputes high-quality SAM Masks, derives metric movement and
   persists auditable artifacts in Supabase.
 
-The live model uses configurable COCO classes (people by default plus common
-animals and furniture), not a football class. The same path therefore applies
+The live model uses the COCO `person` class by default (additional classes can
+be enabled with configuration), not a football class. The same path therefore applies
 to football, basketball, athletics, training
 sessions, handheld footage, field cameras and ordinary crowd scenes. Sport
 semantics and court calibration are optional analytics layers rather than
@@ -35,13 +35,14 @@ there are rounded to two decimal places and marked as measured or configured.
 1. Open `/live` and choose any video or browser camera.
 2. The browser keeps at most one JPEG frame in flight to the tunneled A40 worker;
    slow inference drops capture opportunities instead of building latency.
-3. YOLO11 Segment returns every configured object's box, confidence and Mask while
-   ByteTrack keeps a persistent ID.
+3. YOLO11m-seg returns every configured person's box, confidence and lightweight
+   Mask. ByteTrack is wrapped by `StableTrackRegistry`, which exposes a monotonic
+   public ID even when a detector raw ID changes or briefly disappears.
 4. The server sends compact Mask polygons, movement trails and telemetry through
    one binary WebSocket session.
 5. `ALL MASKS` draws every lightweight Mask, `SELECTED ONLY` draws only the
    active Track, and `BOXES` removes all Mask fills.
-6. Clicking a person sends only its Track ID. Subsequent frames use SAM Base+
+6. Clicking a person sends only its stable Track ID. Subsequent frames use SAM Base+
    for that person while everyone else stays lightweight.
 7. The UI renders the exact captured frame that produced each response, so a
    delayed contour is never painted over a newer video frame.
@@ -73,8 +74,8 @@ video reports pixel speed instead of inventing km/h.
 ```mermaid
 flowchart LR
     C[Video file or browser camera] -->|one JPEG in flight| W[Binary WebSocket]
-    W --> Y[YOLO11s Segment: configured object Masks]
-    Y --> B[ByteTrack: persistent IDs]
+    W --> Y[YOLO11m-seg: person boxes + lightweight Masks]
+    Y --> B[ByteTrack + StableTrackRegistry + Kalman]
     B -->|all lightweight polygons| U[Next.js Canvas]
     U -->|selected Track ID| SR[SAM 2.1 Base+ image refinement]
     SR -->|selected high-quality polygon| U
@@ -124,7 +125,7 @@ sequenceDiagram
 | Layer | Technology | Responsibility |
 | --- | --- | --- |
 | Web | Next.js 16, React 19, TypeScript, Tailwind, Canvas | Live capture, exact-frame drawing, all-Mask modes, box hit-testing, offline results and trajectory panels |
-| Live inference | FastAPI WebSocket, YOLO11s Segment, ByteTrack, SAM 2.1 Image Predictor | Generic all-person lightweight Masks and selected-person SAM refinement |
+| Live inference | FastAPI WebSocket, YOLO11m-seg, ByteTrack, StableTrackRegistry, Kalman, SAM 2.1 Image Predictor | Generic all-person lightweight Masks, stable IDs and selected-person SAM refinement |
 | Controller | FastAPI, Pydantic, Supabase client | Local-admin ownership, validation, Storage sync, SSH/rsync, Slurm state, result verification |
 | Game state | football YOLO, SciPy assignment, OpenCV appearance, PnLCalib | 10 FPS detection, field-registered two-stage association, camera-cut handling and interpolated calibration |
 | Segmentation | SAM 2.1 Hiera Base+ and Large, PyTorch compile, CUDA | Windowed all-person Masks plus optional selected-player refinement |
@@ -153,19 +154,20 @@ modes share the rule that Track ID—not SAM memory—is the identity authority.
 
 ## Live GPU pipeline
 
-### All-object lightweight path
+### All-person lightweight path
 
-- `yolo11s-seg.pt` runs at a 960-pixel inference size with FP16 on CUDA by
-  default, improving recall for distant people while staying within the A40
-  real-time budget. `LIVE_IMAGE_SIZE=640` is the low-latency preset.
-- The default set includes `person`, common animals and furniture. Set
-  `LIVE_CLASSES=all` to expose every class in the checkpoint.
+- `yolo11m-seg.pt` runs at a 960-pixel inference size with FP16 on CUDA by
+  default. `yolo11s-seg.pt` remains an explicit low-latency fallback for cameras.
+- The default set is `LIVE_CLASSES=person`; set `LIVE_CLASSES=all` or a comma-
+  separated COCO list to use the same generic pipeline for animals or objects.
 - Each model result contains aligned per-object box, confidence and instance
   Mask. Mask contours are simplified before JSON serialization.
-- ByteTrack state persists within one WebSocket session. A new camera session
-  resets tracker state so unrelated streams cannot share IDs.
+- ByteTrack is wrapped by `StableTrackRegistry`: public IDs are monotonic, raw-ID
+  reassociation is recorded, and a constant-velocity Kalman filter emits
+  `predicted` boxes and translated Masks for up to 45 missing frames (3.00 s).
+  A new camera session resets tracker state so unrelated streams cannot share IDs.
 - Bottom-centre observations feed an EMA pixel-velocity state and short trail.
-  Histories survive brief detection gaps and expire after 15 missing frames.
+  Histories survive brief detection gaps and expire after 45 missing frames.
 
 ### Selected-person SAM path
 
@@ -177,6 +179,16 @@ modes share the rule that Track ID—not SAM memory—is the identity authority.
 - This live implementation deliberately uses the image predictor per incoming
   frame. The official video predictor expects a known video/frame store; the
   incremental-camera memory loop is a separate optimization, not assumed here.
+
+### Deterministic video mode
+
+Video files use `POST /v1/live/video-sessions` to run the complete source
+sequentially through the A40 before playback. Every frame is stored in an indexed
+compressed result cache. Native play/pause, ±5 s controls and seeking only read
+that cache; they never restart the tracker or assign IDs again. A selected Track
+requests a 31-frame (±15) SAM refinement window and caches the returned polygons.
+This is why the same person keeps the same public ID after arbitrary timeline
+scrubbing, while camera mode remains one-frame-in-flight for low latency.
 
 ### Optional face identity path
 

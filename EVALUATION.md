@@ -7,23 +7,25 @@ is not an accuracy claim.
 
 ## 1. Automatic detection after upload
 
-The live path uses Ultralytics YOLO11s-seg. It detects and segments configured
-COCO objects in every incoming frame; no first-frame box is required.
+The default live path uses Ultralytics YOLO11m-seg. It detects and segments
+COCO people in every incoming frame; no first-frame box is required. Historical
+service measurements below used the s profile and are labelled accordingly;
+the m profile requires its own A40 benchmark before any latency claim is made.
 
 | Quantity | Value | Meaning |
 | --- | ---: | --- |
-| Model parameters | 10,113,248.00 | YOLO11s-seg checkpoint (`yolo11s-seg.pt`) |
-| Reference compute | 33.40 GFLOPs | Ultralytics model-info reference at 640 px |
+| Model parameters | 22,420,896.00 | YOLO11m-seg checkpoint (`yolo11m-seg.pt`) |
+| Reference compute | 114.00 GFLOPs | Ultralytics model-info reference at 640 px |
 | Model label space | 80.00 classes | COCO checkpoint classes |
-| Default enabled classes | 11.00 | person, cat, dog, bird, horse, sheep, cow, chair, couch, bed, dining table |
+| Default enabled classes | 1.00 | `person`; avoids audience and sideline-object noise |
 | Configurable class mode | 80.00 | `LIVE_CLASSES=all` exposes the full checkpoint |
 | Configured inference size | 960.00 px | A40 default; 640 px is the low-latency preset |
-| Confidence threshold | 0.15 | Low threshold retains small/distant candidates |
+| Confidence threshold | 0.10 | Low threshold retains small/distant candidates |
 | NMS maximum detections | 300.00 | Ultralytics `max_det`; not a measured scene capacity |
 | Measured peak concurrent Track IDs | 23.00 | Highest count in any six-second test clip |
 | Measured minimum per-frame Track IDs | 9.00 | Lowest count among tested clips; depends on the shot |
-| A40 steady processing rate | 15.00–15.60 FPS | Seven full six-second clips, all-lightweight path |
-| A40 mean inference latency | 57.80–60.70 ms | Per-frame service time across those clips |
+| Historical s-profile A40 rate | 15.00–15.60 FPS | Seven full six-second clips, all-lightweight path |
+| Historical s-profile inference | 57.80–60.70 ms | Per-frame service time; not a YOLO11m claim |
 
 The 23-person result is the tested scene capacity, not a promise that every
 camera can detect 23 people. Small subjects, blur, extreme crowd density and
@@ -33,7 +35,8 @@ the selected class list determine recall. The model output has no hard-coded
 ## 2. Lightweight instance Mask, Box and persistent ID
 
 Each YOLO detection returns a bounding box, confidence and an instance contour.
-ByteTrack owns the temporal identity; SAM never changes a Track ID.
+ByteTrack proposes associations, while `StableTrackRegistry` owns public,
+monotonic Track IDs; SAM never changes a Track ID.
 
 | Quantity | Value | Meaning |
 | --- | ---: | --- |
@@ -42,7 +45,7 @@ ByteTrack owns the temporal identity; SAM never changes a Track ID.
 | Concurrent IDs per clip | 16.00–23.00 peak | Depends on the camera segment |
 | Motion history capacity | 90.00 samples | Six seconds at 15 FPS per Track |
 | Drawn trail length | 45.00 points | Three seconds of recent history |
-| Missing-frame retention | 15.00 frames | About one second at 15 FPS |
+| Missing-frame retention | 45.00 frames | About three seconds at 15 FPS; predicted state is explicit |
 | Typical lightweight contour size | 27.00 vertices | Measured on Track 1 in the opening clip |
 
 The lightweight contour is a compact polygon for real-time transport and
