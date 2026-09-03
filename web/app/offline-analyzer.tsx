@@ -93,18 +93,9 @@ export function OfflineAnalyzer() {
     }
     if (nextFile.size > MAX_VIDEO_BYTES) return setMessage(`“${nextFile.name}” is ${(nextFile.size / 1024 / 1024).toFixed(1)} MB. The upload limit is 50 MB; trim or export a shorter clip first.`);
     const url = URL.createObjectURL(nextFile);
-    let duration: number | null = null;
-    try {
-      duration = await readDuration(url);
-    } catch {
-      URL.revokeObjectURL(url);
-      return setMessage(`“${nextFile.name}” cannot be previewed by this browser. Export it as H.264 MP4 and try again.`);
-    }
-    if (duration > 60) {
-      URL.revokeObjectURL(url);
-      return setMessage(`This clip is ${Math.ceil(duration)} seconds. The offline workflow supports clips up to 60 seconds.`);
-    }
     if (videoUrl) URL.revokeObjectURL(videoUrl);
+    // Set the preview before reading metadata so a valid local file is visible
+    // immediately, even when Safari/Chrome takes time to inspect its codec.
     setFile(nextFile);
     setVideoUrl(url);
     setJobId("");
@@ -113,6 +104,19 @@ export function OfflineAnalyzer() {
     setTrackCount(0);
     setMessage("");
     window.localStorage.removeItem(LAST_JOB_KEY);
+    let duration: number | null = null;
+    try {
+      duration = await readDuration(url);
+    } catch {
+      setMessage(`“${nextFile.name}” is selected, but the browser cannot preview this codec. FastAPI will attempt FFmpeg normalization when you start analysis.`);
+      return;
+    }
+    if (duration > 60) {
+      URL.revokeObjectURL(url);
+      setFile(null);
+      setVideoUrl("");
+      return setMessage(`This clip is ${Math.ceil(duration)} seconds. The offline workflow supports clips up to 60 seconds.`);
+    }
   }
 
   function reset() {
@@ -175,7 +179,7 @@ export function OfflineAnalyzer() {
         <section className="panel simple-upload">
           <div className="upload-layout">
             <div className="upload-copy"><span className="upload-icon"><CloudUpload size={24} /></span><div><h2>Select match footage</h2><p>H.264 MP4 · up to 60 seconds · 50 MB maximum</p></div></div>
-            <div className="upload-action"><label className="button button-primary">SELECT VIDEO<input type="file" onChange={(event) => { void chooseFile(event.target.files?.[0]); event.currentTarget.value = ""; }} /></label><span>H.264 MP4 · up to 60 seconds · 50 MB</span></div>
+            <div className="upload-action"><label className="button button-primary upload-trigger"><span>SELECT VIDEO</span><input type="file" onChange={(event) => { const selected = event.currentTarget.files?.[0]; if (selected) void chooseFile(selected); }} onInput={(event) => { const selected = event.currentTarget.files?.[0]; if (selected) void chooseFile(selected); }} /></label><span>H.264 MP4 · up to 60 seconds · 50 MB</span></div>
           </div>
           {message && <p className="form-error">{message}</p>}
         </section>
