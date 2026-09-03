@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import cv2
 from scipy.optimize import linear_sum_assignment
 
 from worker.game_state import bbox_iou
@@ -21,30 +22,71 @@ def load(path: Path) -> Any:
         return json.load(handle)
 
 
-def evaluate(results: Path, annotations: Path) -> dict[str, Any]:
-    tracks = load(results / "tracks.json")
-    ground_truth = load(annotations)
-    predictions_by_frame: dict[int, list[dict[str, Any]]] = {}
-    trajectories: dict[tuple[int, int], dict[str, Any]] = {}
-    for track in tracks:
-        track_id = int(track["object_id"])
-        for detection in track.get("detections") or track["trajectory"]:
-            frame = int(detection["frame"])
-            predictions_by_frame.setdefault(frame, []).append(
-                {"track_id": track_id, "bbox": detection["bbox"]}
+def load_live_predictions(results: Path) -> tuple[dict[int, list[dict[str, Any]]], dict[tuple[int, int], Any], dict[tuple[int, int], dict[str, Any]]]:
+    """Read indexed live-session results without treating light Masks as SAM."""
+    frames = load(results / "frames.json.gz")
+    predictions: dict[int, list[dict[str, Any]]] = {}
+    sizes: dict[tuple[int, int], tuple[int, int]] = {}
+    for frame in frames:
+        frame_index = int(frame["frame_id"])
+        height, width = int(frame["height"]), int(frame["width"])
+        for track in frame.get("tracks", []):
+            track_id = int(track["track_id"])
+            predictions.setdefault(frame_index, []).append(
+                {"track_id": track_id, "bbox": track["bbox"]}
             )
-        for point in track["trajectory"]:
-            trajectories[(track_id, int(point["frame"]))] = point
+            sizes[(track_id, frame_index)] = (height, width)
 
-    mask_manifests = {
-        int(path.name.removesuffix(".json.gz")): load(path)
-        for path in (results / "masks").glob("[0-9]*.json.gz")
-    }
-    masks = {
-        (track_id, int(frame["index"])): frame["rle"]
-        for track_id, manifest in mask_manifests.items()
-        for frame in manifest["frames"]
-    }
+    sam_masks: dict[tuple[int, int], dict[str, Any]] = {}
+    for path in results.glob("sam-*.json.gz"):
+        refinement = load(path)
+        track_id = int(refinement.get("track_id", -1))
+        for item in refinement.get("frames", []):
+            sam_masks[(track_id, int(item["frame"]))] = {
+                "polygon": item["mask"],
+                "size": sizes.get((track_id, int(item["frame"]))),
+            }
+    return predictions, sam_masks, {}
+
+
+def polygon_mask(points: list[list[float]] | list[tuple[float, float]], size: tuple[int, int]) -> np.ndarray:
+    height, width = size
+    mask = np.zeros((height, width), dtype=np.uint8)
+    polygon = np.asarray(points, dtype=np.float32)
+    if polygon.shape[0] >= 3:
+        cv2.fillPoly(mask, [np.rint(polygon).astype(np.int32)], 1)
+    return mask.astype(bool)
+
+
+def evaluate(results: Path, annotations: Path) -> dict[str, Any]:
+    ground_truth = load(annotations)
+    predictions_by_frame: dict[int, list[dict[str, Any]]]
+    trajectories: dict[tuple[int, int], dict[str, Any]] = {}
+    live_masks: dict[tuple[int, int], dict[str, Any]] = {}
+    if (results / "frames.json.gz").is_file():
+        predictions_by_frame, live_masks, trajectories = load_live_predictions(results)
+        masks: dict[tuple[int, int], dict[str, Any]] = {}
+    else:
+        tracks = load(results / "tracks.json")
+        predictions_by_frame = {}
+        for track in tracks:
+            track_id = int(track["object_id"])
+            for detection in track.get("detections") or track["trajectory"]:
+                frame = int(detection["frame"])
+                predictions_by_frame.setdefault(frame, []).append(
+                    {"track_id": track_id, "bbox": detection["bbox"]}
+                )
+            for point in track["trajectory"]:
+                trajectories[(track_id, int(point["frame"]))] = point
+        mask_manifests = {
+            int(path.name.removesuffix(".json.gz")): load(path)
+            for path in (results / "masks").glob("[0-9]*.json.gz")
+        }
+        masks = {
+            (track_id, int(frame["index"])): frame["rle"]
+            for track_id, manifest in mask_manifests.items()
+            for frame in manifest["frames"]
+        }
 
     true_positive = false_positive = false_negative = 0
     identity_pairs: Counter[tuple[int, str]] = Counter()
@@ -80,9 +122,18 @@ def evaluate(results: Path, annotations: Path) -> dict[str, Any]:
             identity_pairs[(track_id, str(truth["gt_id"]))] += 1
             predicted_rle = masks.get((track_id, frame_index))
             truth_rle = truth.get("mask_rle")
+            predicted_live_mask = live_masks.get((track_id, frame_index))
             if predicted_rle and truth_rle:
                 first = decode_mask(predicted_rle).astype(bool)
                 second = decode_mask(truth_rle).astype(bool)
+                intersection = int(np.logical_and(first, second).sum())
+                union = int(np.logical_or(first, second).sum())
+                mask_ious.append(intersection / union if union else 1.0)
+            elif predicted_live_mask and truth_rle and predicted_live_mask.get("size"):
+                first = polygon_mask(predicted_live_mask["polygon"], predicted_live_mask["size"])
+                second = decode_mask(truth_rle).astype(bool)
+                if first.shape != second.shape:
+                    raise ValueError("live SAM polygon and truth mask dimensions differ")
                 intersection = int(np.logical_and(first, second).sum())
                 union = int(np.logical_or(first, second).sum())
                 mask_ious.append(intersection / union if union else 1.0)

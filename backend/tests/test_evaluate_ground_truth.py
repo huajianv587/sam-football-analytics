@@ -74,3 +74,45 @@ def test_human_validation_metrics_use_real_matches_and_masks(tmp_path) -> None:
     assert report["identity"]["idf1"] == 1
     assert report["segmentation"]["mean_iou"] == 1
     assert report["calibration"]["median_error_m"] == 0
+
+
+def test_live_session_metrics_read_indexed_tracks_and_sam_polygons(tmp_path) -> None:
+    results = tmp_path / "live-session"
+    results.mkdir()
+    mask = np.zeros((20, 20), dtype=bool)
+    mask[2:12, 3:9] = True
+    rle = encode_mask(mask)
+    with gzip.open(results / "frames.json.gz", "wt") as handle:
+        json.dump(
+            [
+                {
+                    "frame_id": 0,
+                    "width": 20,
+                    "height": 20,
+                    "tracks": [{"track_id": 7, "bbox": [3, 2, 9, 12]}],
+                }
+            ],
+            handle,
+        )
+    with gzip.open(results / "sam-7-0-0.json.gz", "wt") as handle:
+        json.dump(
+            {
+                "track_id": 7,
+                "frames": [{"frame": 0, "mask": [[3, 2], [8, 2], [8, 11], [3, 11]]}],
+            },
+            handle,
+        )
+    annotations = tmp_path / "truth.json"
+    annotations.write_text(
+        json.dumps(
+            {
+                "frames": [
+                    {"frame": 0, "objects": [{"gt_id": "p1", "bbox": [3, 2, 9, 12], "mask_rle": rle}]}
+                ]
+            }
+        )
+    )
+    report = evaluate(results, annotations)
+    assert report["detection"]["precision"] == 1
+    assert report["identity"]["idf1"] == 1
+    assert report["segmentation"]["mean_iou"] == 1

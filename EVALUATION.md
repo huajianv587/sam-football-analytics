@@ -175,7 +175,7 @@ Mask IoU is claimed without a labelled validation set.
 - 630.00 total live regression frames: every frame returned Tracks and a
   lightweight Mask.
 - 90.00 selected-SAM frames: 89.00 returned a SAM Mask.
-- 81.00 backend tests, 10.00 frontend tests, ESLint and production build:
+- 82.00 backend tests, 10.00 frontend tests, ESLint and production build:
   all passed.
 - Controller and A40 live `/health` endpoints: passed.
 
