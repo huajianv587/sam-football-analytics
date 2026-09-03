@@ -154,7 +154,7 @@ export function LiveAnalyzer() {
     for (const track of frame.tracks) drawTrack(context, track, displayModeRef.current, selectedIdRef.current);
   }
 
-  function selectAt(event: React.MouseEvent<HTMLCanvasElement>) {
+  function selectAt(event: React.PointerEvent<HTMLCanvasElement>) {
     const canvas = event.currentTarget;
     const rect = canvas.getBoundingClientRect();
     const track = smallestLiveTrackAt(
@@ -207,7 +207,7 @@ export function LiveAnalyzer() {
         <section className="panel live-main">
           <div className="live-stage">
             <video ref={videoRef} src={sourceUrl || undefined} muted playsInline loop className={state === "running" ? "source-hidden" : ""} />
-            <canvas ref={outputRef} onClick={selectAt} />
+            <canvas ref={outputRef} onPointerDown={selectAt} />
             {!sourceName && <div className="live-empty"><Users size={38} /><strong>Select a real-time source</strong><span>Any sport · any scene containing people</span></div>}
           </div>
           <canvas ref={captureRef} hidden />
