@@ -1,4 +1,8 @@
+import asyncio
 import json
+import os
+from urllib.error import URLError
+from urllib.request import urlopen
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,6 +19,7 @@ from .schemas import (
     HealthResponse,
     IdentityUpdateRequest,
     JobResponse,
+    LiveAvailabilityResponse,
     RefinementResponse,
     VideoRefineRequest,
     VideoSessionResponse,
@@ -46,6 +51,36 @@ def runner() -> JobRunner:
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     return HealthResponse()
+
+
+def _a40_available() -> bool:
+    websocket_url = os.getenv("LIVE_WS_URL", "ws://127.0.0.1:8010/v1/live/ws")
+    health_url = websocket_url.replace("ws://", "http://").replace("wss://", "https://").replace("/v1/live/ws", "/health")
+    try:
+        with urlopen(health_url, timeout=1.5) as response:
+            return response.status == 200
+    except (URLError, OSError):
+        return False
+
+
+def _mac_mps_available() -> bool:
+    try:
+        import torch
+
+        return bool(torch.backends.mps.is_available())
+    except ImportError:
+        return False
+
+
+@app.get("/v1/live/availability", response_model=LiveAvailabilityResponse)
+async def live_availability() -> LiveAvailabilityResponse:
+    a40_available = await asyncio.to_thread(_a40_available)
+    mac_mps_available = await asyncio.to_thread(_mac_mps_available)
+    if a40_available:
+        return LiveAvailabilityResponse(selected_executor="a40", a40_available=True, mac_mps_available=mac_mps_available, local_worker_available=False, message="A40 inference is ready")
+    if mac_mps_available:
+        return LiveAvailabilityResponse(selected_executor="mac_mps", a40_available=False, mac_mps_available=True, local_worker_available=False, message="A40 is unavailable; Mac MPS fallback is selected")
+    return LiveAvailabilityResponse(selected_executor="cpu", a40_available=False, mac_mps_available=False, local_worker_available=False, message="A40 is unavailable; CPU fallback is selected")
 
 
 def video_session_response(session) -> VideoSessionResponse:

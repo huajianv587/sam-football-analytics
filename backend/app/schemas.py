@@ -127,6 +127,14 @@ class HealthResponse(BaseModel):
     scheduler: Literal["tc2-slurm"] = "tc2-slurm"
 
 
+class LiveAvailabilityResponse(BaseModel):
+    selected_executor: Literal["a40", "mac_mps", "cpu"]
+    a40_available: bool
+    mac_mps_available: bool
+    local_worker_available: bool
+    message: str
+
+
 class VideoSessionResponse(BaseModel):
     session_id: str
     filename: str
