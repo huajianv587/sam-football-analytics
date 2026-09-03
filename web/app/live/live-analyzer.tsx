@@ -262,10 +262,12 @@ function drawTrack(context: CanvasRenderingContext2D, track: LiveTrack, mode: Li
   context.lineWidth = selected ? 3 : 1.2;
   context.strokeRect(x1, y1, x2 - x1, y2 - y1);
   context.fillStyle = "rgba(3, 10, 8, .85)";
-  context.fillRect(x1, Math.max(0, y1 - 18), 50, 18);
-  context.fillStyle = color;
+  const label = `${track.class_name} · ID ${track.track_id}`;
   context.font = "700 12px sans-serif";
-  context.fillText(`ID ${track.track_id}`, x1 + 5, Math.max(13, y1 - 5));
+  const labelWidth = Math.max(58, context.measureText(label).width + 10);
+  context.fillRect(x1, Math.max(0, y1 - 18), labelWidth, 18);
+  context.fillStyle = color;
+  context.fillText(label, x1 + 5, Math.max(13, y1 - 5));
   if (selected && track.trail.length > 1) {
     context.beginPath();
     track.trail.forEach(([x, y], index) => index ? context.lineTo(x, y) : context.moveTo(x, y));
