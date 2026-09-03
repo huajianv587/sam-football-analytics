@@ -151,7 +151,9 @@ modes share the rule that Track ID—not SAM memory—is the identity authority.
 
 ### All-object lightweight path
 
-- `yolo11s-seg.pt` runs at 640-pixel inference size with FP16 on CUDA.
+- `yolo11s-seg.pt` runs at a 960-pixel inference size with FP16 on CUDA by
+  default, improving recall for distant people while staying within the A40
+  real-time budget. `LIVE_IMAGE_SIZE=640` is the low-latency preset.
 - The default set includes `person`, common animals and furniture. Set
   `LIVE_CLASSES=all` to expose every class in the checkpoint.
 - Each model result contains aligned per-object box, confidence and instance
@@ -211,6 +213,19 @@ segmenter; that trades throughput for recall. The reproducible live commands
 and the exact model checksum are in `SETUP.md` and `THIRD_PARTY_NOTICES.md`.
 
 ## Offline GPU pipeline
+
+### Detection recall guard
+
+The football-specific detector is the primary source because it provides pitch
+and jersey metadata. Before tracking, PitchVision measures its per-frame person
+coverage. If the median visible-person count is below the configured guard
+(`GENERIC_DETECTOR_FALLBACK_MEDIAN`, default `18`), the same job runs the cached
+COCO `yolo11s-seg.pt` checkpoint at 1280 input resolution as a recall pass. Its
+boxes enter the existing field-space association and SAM pipeline; IDs are
+still created only by the tracker. The run records `detector_source` as
+`soccer_yolo` or `yolo11s_seg_fallback` in `metrics.json` so a result never
+looks more complete than the detector evidence supports. Set
+`GENERIC_DETECTOR_ENABLED=false` when evaluating the football-only baseline.
 
 ### 1. Normalize
 

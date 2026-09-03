@@ -75,16 +75,28 @@ export function MaskVideoPlayer({
       context.drawImage(offscreen, projected.x, projected.y, projected.width, projected.height);
     }
 
-    if (showTrajectory && selectedId !== null) {
-      const path = trackMap.get(selectedId)?.trajectory.filter((point) => point.frame <= frameIndex) ?? [];
-      if (path.length > 1) {
-        context.strokeStyle = "#b8ff62";
-        context.lineWidth = 3;
+    if (showTrajectory) {
+      const trajectoryTracks = selectedId === null ? tracks : [trackMap.get(selectedId)].filter((track): track is Track => Boolean(track));
+      for (const track of trajectoryTracks) {
+        const selected = track.object_id === selectedId;
+        context.strokeStyle = selected ? "#b8ff62" : "rgba(184,255,98,.22)";
+        context.lineWidth = selected ? 3 : 1;
         context.lineCap = "round";
         context.lineJoin = "round";
-        context.beginPath();
-        path.forEach((point, index) => index ? context.lineTo(...point.foot) : context.moveTo(...point.foot));
-        context.stroke();
+        let path: Array<{ frame: number; foot: [number, number] }> = [];
+        let previousFrame: number | null = null;
+        const drawPath = () => {
+          if (path.length < 2) return;
+          context.beginPath();
+          path.forEach((point, index) => index ? context.lineTo(...point.foot) : context.moveTo(...point.foot));
+          context.stroke();
+        };
+        for (const point of track.trajectory.filter((item) => item.frame <= frameIndex)) {
+          if (previousFrame !== null && point.frame - previousFrame > 15) { drawPath(); path = []; }
+          path.push({ frame: point.frame, foot: point.foot });
+          previousFrame = point.frame;
+        }
+        drawPath();
       }
     }
 
@@ -100,7 +112,7 @@ export function MaskVideoPlayer({
       context.fillStyle = `rgb(${color.join(",")})`;
       context.fillText(`ID ${track.object_id}`, point.bbox[0] + 5, labelY + 14);
     }
-  }, [detectionsByFrame, frameIndex, maskByFrame, selectedId, showMasks, showTrajectory, trackMap]);
+  }, [detectionsByFrame, frameIndex, maskByFrame, selectedId, showMasks, showTrajectory, trackMap, tracks]);
 
   useEffect(() => draw(), [draw]);
 
@@ -130,19 +142,24 @@ export function MaskVideoPlayer({
     }
   }
 
-  function click(event: React.MouseEvent<HTMLDivElement>) {
-    // Let native video controls own their lower control bar. Track selection is
-    // only attempted for clicks that land on the video image itself.
-    if (event.target !== videoRef.current) return;
+  function click(event: React.PointerEvent<HTMLDivElement>) {
     const rect = event.currentTarget.getBoundingClientRect();
+    // Native controls occupy the lower edge of the video. Ignore only that
+    // strip; the rest of the stage remains a reliable track hit target even
+    // when the browser reports the parent/canvas as the event target.
+    if ((event.clientY - rect.top) / rect.height > 0.86) return;
     const x = ((event.clientX - rect.left) / rect.width) * dimensions.width;
     const y = ((event.clientY - rect.top) / rect.height) * dimensions.height;
     const selected = smallestTrackAt(tracks, frameIndex, x, y);
-    if (selected) onSelect(selected.object_id);
+    if (selected) {
+      event.preventDefault();
+      videoRef.current?.pause();
+      onSelect(selected.object_id);
+    }
   }
 
   return (
-    <div className="video-stage" onClick={click}>
+    <div className="video-stage" onPointerDown={click}>
       <video ref={videoRef} src={videoUrl} crossOrigin="anonymous" controls playsInline onLoadedMetadata={readVideoSize} onTimeUpdate={syncTime} onSeeked={syncTime} />
       <canvas ref={canvasRef} width={dimensions.width} height={dimensions.height} />
     </div>

@@ -102,6 +102,79 @@ def extract_frames(video: Path, directory: Path) -> list[Path]:
     return sorted(directory.glob("*.jpg"))
 
 
+def run_generic_person_detector(
+    video: Path,
+    width: int,
+    height: int,
+    detector_fps: float,
+    checkpoint: Path,
+) -> tuple[dict[str, Any] | None, dict[str, float]]:
+    """Run a generic COCO person segmenter only when football recall is low.
+
+    The SoccerNet detector remains the primary path because it carries useful
+    football metadata. This second pass is deliberately gated by frame
+    coverage, and its boxes enter the same field-space tracker; it never
+    invents a Track ID or bypasses the downstream SAM quality gates.
+    """
+    if not checkpoint.is_file():
+        return None, {"generic_detector_available": 0.0}
+    try:
+        from ultralytics import YOLO
+    except ImportError:
+        return None, {"generic_detector_available": 0.0}
+
+    import torch
+
+    started = time.perf_counter()
+    model = YOLO(str(checkpoint))
+    image_size = int(os.getenv("GENERIC_DETECTOR_IMGSZ", "1280"))
+    confidence = float(os.getenv("GENERIC_DETECTOR_CONF", "0.08"))
+    device = os.getenv("GENERIC_DETECTOR_DEVICE", "0" if torch.cuda.is_available() else "cpu")
+    frames: list[dict[str, Any]] = []
+    results = model.predict(
+        source=str(video),
+        stream=True,
+        classes=[0],
+        conf=confidence,
+        imgsz=image_size,
+        device=device,
+        half=torch.cuda.is_available(),
+        verbose=False,
+    )
+    for frame_index, result in enumerate(results):
+        boxes = result.boxes
+        frame_tracks: list[dict[str, Any]] = []
+        if boxes is not None:
+            coordinates = boxes.xyxy.detach().cpu().tolist()
+            confidences = boxes.conf.detach().cpu().tolist()
+            for box, box_confidence in zip(coordinates, confidences, strict=False):
+                x1, y1, x2, y2 = (float(value) for value in box)
+                if x2 <= x1 or y2 <= y1:
+                    continue
+                frame_tracks.append({
+                    "bbox": [
+                        max(0.0, min(width, x1)), max(0.0, min(height, y1)),
+                        max(0.0, min(width, x2)), max(0.0, min(height, y2)),
+                    ],
+                    "confidence": float(box_confidence),
+                    "role": "player",
+                })
+        frames.append({"index": frame_index, "tracks": frame_tracks})
+    del model
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    if not frames:
+        return None, {"generic_detector_available": 1.0, "generic_detector_seconds": time.perf_counter() - started}
+    return (
+        {"fps": detector_fps, "width": width, "height": height, "frames": frames},
+        {
+            "generic_detector_available": 1.0,
+            "generic_detector_seconds": time.perf_counter() - started,
+            "generic_detector_mean_people": float(np.mean([len(frame["tracks"]) for frame in frames])),
+        },
+    )
+
+
 def run_game_state_reconstruction(job_dir: Path, video: Path) -> tuple[Path, dict[str, float]]:
     runtime = Path(os.environ["GSR_RUNTIME_DIR"])
     capture = cv2.VideoCapture(str(video))
@@ -194,8 +267,32 @@ def run_game_state_reconstruction(job_dir: Path, video: Path) -> tuple[Path, dic
     )
     set_progress(job_dir, "track", 40)
     tracking_started = time.perf_counter()
+    detector_source = "soccer_yolo"
+    generic_metrics: dict[str, float] = {}
+    if os.getenv("GENERIC_DETECTOR_ENABLED", "true").lower() == "true":
+        visible_counts = [len(frame.get("tracks", [])) for frame in detection_state.get("frames", [])]
+        median_visible = float(np.median(visible_counts)) if visible_counts else 0.0
+        fallback_threshold = float(os.getenv("GENERIC_DETECTOR_FALLBACK_MEDIAN", "18"))
+        if median_visible < fallback_threshold:
+            generic_state, generic_metrics = run_generic_person_detector(
+                detector_video,
+                width,
+                height,
+                detector_fps,
+                Path(os.getenv("GENERIC_DETECTOR_MODEL", str(runtime / "checkpoints" / "yolo11s-seg.pt"))),
+            )
+            if generic_state is not None:
+                detection_state = generic_state
+                detector_source = "yolo11s_seg_fallback"
     tracked_state, association_metrics = field_space_track(
-        detection_state, detector_calibrations, detector_video
+        detection_state,
+        detector_calibrations,
+        detector_video,
+        high_confidence=(
+            float(os.getenv("GENERIC_TRACK_NEW_CONFIDENCE", "0.25"))
+            if detector_source == "yolo11s_seg_fallback"
+            else 0.65
+        ),
     )
     timings["field_track_seconds"] = time.perf_counter() - tracking_started
     timings.update({
@@ -203,9 +300,12 @@ def run_game_state_reconstruction(job_dir: Path, video: Path) -> tuple[Path, dic
         for key, value in association_metrics.items()
         if isinstance(value, (int, float))
     })
+    timings.update(generic_metrics)
+    timings["detector_source_generic_fallback"] = float(detector_source != "soccer_yolo")
     full_calibrations = interpolate_calibrations(calibration_state, frame_count, FPS)
     state = resample_tracks(tracked_state, full_calibrations, frame_count, FPS)
     state["association_metrics"] = association_metrics
+    state["detector_source"] = detector_source
     output = job_dir / "game-state.json"
     output.write_text(json.dumps(state, separators=(",", ":")))
     return output, timings
@@ -1025,7 +1125,10 @@ def process(job_dir: Path) -> None:
             role = "goalkeeper"
         pitch_points = [tuple(sample["pitch"]) if sample["pitch"] else None for sample in track_samples]
         smoothed_points = smooth_metric_positions(pitch_points, FPS)
-        speeds = speed_series(pitch_points, FPS)
+        # Publish movement metrics from the same robust field-space state used
+        # for the trajectory. Using raw foot projections here can turn a
+        # single calibration/leg-mask jitter into an implausible speed spike.
+        speeds = speed_series(smoothed_points, FPS)
         trajectory = [
             {
                 **sample,
@@ -1079,7 +1182,7 @@ def process(job_dir: Path) -> None:
                         "player_name": match["player_name"] if match else None,
                         "confidence": identity_confidence,
                     },
-                    "distance_m": traveled_distance(pitch_points, FPS),
+                    "distance_m": traveled_distance(smoothed_points, FPS),
                     "average_speed_kmh": round(float(np.mean(valid_speeds)), 2) if valid_speeds else None,
                     "max_speed_kmh": (
                         max(valid_speeds, default=None) if metric_duration >= 1.0 else None
@@ -1145,6 +1248,9 @@ def process(job_dir: Path) -> None:
         "sam_bidirectional": os.getenv("SAM_BIDIRECTIONAL", "true").lower() == "true",
         "sam_prompts_per_track": int(os.getenv("SAM_PROMPTS_PER_TRACK", "3")),
         "detector_tracker_fps": float(os.getenv("DETECTOR_TRACKER_FPS", "10")),
+        "detector_source": game_state.get("detector_source", "soccer_yolo"),
+        "generic_detector_enabled": os.getenv("GENERIC_DETECTOR_ENABLED", "true").lower() == "true",
+        "generic_detector_fallback_median": float(os.getenv("GENERIC_DETECTOR_FALLBACK_MEDIAN", "18")),
         "reid_appearance_fps": float(os.getenv("REID_APPEARANCE_FPS", "5")),
         "calibration_fps": float(os.getenv("CALIBRATION_FPS", "5")),
         "role_model_enabled": os.getenv("ROLE_MODEL_ENABLED", "false").lower() == "true",

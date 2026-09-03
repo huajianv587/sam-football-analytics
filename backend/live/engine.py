@@ -21,8 +21,11 @@ class LiveInferenceEngine:
         from ultralytics import YOLO
 
         self.device = os.getenv("LIVE_DEVICE", "0")
-        self.image_size = int(os.getenv("LIVE_IMAGE_SIZE", "640"))
-        self.confidence = float(os.getenv("LIVE_CONFIDENCE", "0.25"))
+        # 960 keeps distant people in a broadcast frame while remaining
+        # real-time on an A40 with the small segmentation checkpoint. Both
+        # values stay configurable for weaker edge hardware.
+        self.image_size = int(os.getenv("LIVE_IMAGE_SIZE", "960"))
+        self.confidence = float(os.getenv("LIVE_CONFIDENCE", "0.15"))
         self.segment_model_path = os.getenv("LIVE_SEG_MODEL", "yolo11s-seg.pt")
         self.segmenter = YOLO(self.segment_model_path)
         self.class_names = self._configured_classes()
