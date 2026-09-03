@@ -218,6 +218,11 @@ button { cursor: pointer; }
 .live-empty svg { color: var(--accent); }
 .live-empty strong { color: var(--text); font-size: 18px; }
 .live-empty span { font-size: 11px; }
+.live-track-panel { padding: 14px; }
+.live-track-list { display: flex; flex-wrap: wrap; gap: 6px; max-height: 132px; overflow: auto; }
+.live-track-chip { border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--muted); padding: 6px 9px; font-size: 10px; letter-spacing: .04em; }
+.live-track-chip span { margin-left: 5px; color: var(--text); font-variant-numeric: tabular-nums; }
+.live-track-chip.active { border-color: var(--accent); background: rgba(134,216,63,.12); color: var(--text); }
 .live-controls { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
 .live-source-name { min-width: 0; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; }
 .live-tabs { width: max-content; margin-top: 10px; }
