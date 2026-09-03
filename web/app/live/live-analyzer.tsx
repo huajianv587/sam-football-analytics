@@ -6,7 +6,8 @@ import { liveFramePacket, smallestLiveTrackAt, type LiveDisplayMode, type LiveFr
 
 const COLORS = ["#5fbe42", "#2583c5", "#ef9d36", "#8b5cf6", "#e85d75", "#16a085"];
 const TARGET_FPS = 15;
-const API_URL = process.env.NEXT_PUBLIC_INFERENCE_API_URL ?? "http://127.0.0.1:8010";
+// File precompute is orchestrated by FastAPI; only camera frames use the A40 WebSocket.
+const API_URL = process.env.NEXT_PUBLIC_INFERENCE_API_URL ?? "http://127.0.0.1:8000";
 type SourceKind = "none" | "video" | "camera";
 type VideoState = "idle" | "queued" | "running" | "ready" | "failed";
 
