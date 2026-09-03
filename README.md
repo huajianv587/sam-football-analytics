@@ -212,6 +212,16 @@ players can be very small, so a production sports profile should increase
 segmenter; that trades throughput for recall. The reproducible live commands
 and the exact model checksum are in `SETUP.md` and `THIRD_PARTY_NOTICES.md`.
 
+On the supplied 30-second broadcast, the active A40 service was also exercised
+against seven independently encoded six-second clips (five sequential and two
+overlapping). In the all-lightweight path, every 90/90 frames of every clip
+returned at least one Track and a non-empty lightweight Mask; per-clip maxima
+were 16–23 concurrent IDs and the steady processing rate was 15.0–15.6 FPS.
+Selecting the first Track on a full clip returned a SAM polygon on 89/90 frames,
+with 145.8 ms mean inference (about 6.6 FPS). This is a transport/inference
+regression result, not a claim of human-labelled detection or segmentation
+accuracy.
+
 ## Offline GPU pipeline
 
 ### Detection recall guard
@@ -398,6 +408,22 @@ The wide broadcast source makes many jersey numbers physically unreadable. A
 zero-name automatic result on such footage is an honest `Unidentified` outcome,
 not evidence that the verified roster or manual correction path is broken.
 
+## Deep media regression set
+
+The supplied source is retained unchanged under `视频素材/标准化/` and is not
+committed to this public repository. Run
+`backend/scripts/split_test_clips.py` to produce five sequential six-second
+clips plus two overlapping six-second boundary clips under
+`test_assets/generated/`. The script re-encodes each output as independently
+decodable H.264/yuv420p and writes SHA-256 values to `manifest.json`.
+
+`backend/scripts/check_test_clips.py` then decodes every generated frame and
+checks the declared frame count, non-empty samples and timestamp monotonicity.
+The current source produced 7/7 valid clips: each is 90 frames at 15 FPS,
+1280 x 720, with zero timestamp regressions. These are inference/regression
+fixtures, not labelled training data. Supervised training requires separately
+licensed footage and instance-mask annotations.
+
 ## Author's design philosophy
 
 1. **Identity and pixels need separate owners.** Online tracking owns the ID;
@@ -459,6 +485,7 @@ files are present and non-empty.
 │   ├── scripts/                 Runtime bootstrap, sbatch and artifact validator
 │   └── tests/                   API, tracking, RLE, identity and analytics tests
 ├── supabase/migrations/         Schema, RLS, Storage, auto tracking and roster
+├── test_assets/                 Split-clip instructions (generated footage is ignored)
 ├── SETUP.md                     Reproducible setup and operating guide
 ├── THIRD_PARTY_NOTICES.md       Model sources, pins, checksums and licenses
 └── .env.example                 Public configuration names without secrets
@@ -499,11 +526,17 @@ cd web
 npm test -- --run
 npm run lint
 npm run build
+
+# Optional source-media regression check
+python3 backend/scripts/split_test_clips.py \
+  "视频素材/标准化/西班牙_阿根廷_连续镜头_30s_720p15.mp4"
+python3 backend/scripts/check_test_clips.py test_assets/generated/manifest.json
 ```
 
 The current codebase passes 71 backend tests, 10 frontend tests, ESLint and the
-Next.js production build. GPU artifacts are additionally checked with
-`backend/scripts/validate_artifacts.py`.
+Next.js production build. The controller and live worker health endpoints were
+also checked locally and through the active A40 tunnel. GPU artifacts are
+additionally checked with `backend/scripts/validate_artifacts.py`.
 
 ## Limitations and roadmap
 

@@ -15,6 +15,7 @@ web/node_modules/
 backend/.venv/
 .cache/
 artifacts/
+test_assets/generated/
 
 # Local or copyrighted media and generated inference artifacts
 视频素材/
