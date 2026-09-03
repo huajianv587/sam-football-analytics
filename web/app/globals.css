@@ -108,10 +108,18 @@ button { cursor: pointer; }
 .source-modes { display: flex; flex-wrap: nowrap; justify-content: flex-end; gap: 7px; min-width: max-content; }
 .source-mode { display: inline-flex; align-items: center; gap: 6px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 999px; color: #64776e; font-size: 9px; font-weight: 800; letter-spacing: .055em; }
 .source-mode.active { color: var(--accent); border-color: rgba(184,255,98,.28); background: rgba(184,255,98,.07); }
-.simple-upload { min-height: 390px; display: grid; place-items: center; align-content: center; text-align: center; border-style: dashed; }
-.simple-upload svg { color: var(--accent); }
-.simple-upload h2 { margin: 16px 0 5px; font-size: 21px; font-weight: 650; letter-spacing: -.025em; }
+.workflow-strip { display: flex; align-items: center; gap: 12px; margin: 0 0 14px; color: var(--muted); font-size: 11px; letter-spacing: .02em; }
+.workflow-strip span { display: inline-flex; align-items: center; gap: 7px; }
+.workflow-strip b { color: var(--accent); font-size: 10px; letter-spacing: .08em; }
+.workflow-strip i { width: 26px; height: 1px; background: var(--line); }
+.simple-upload { min-height: 270px; display: grid; place-items: center; align-content: center; text-align: left; border-style: dashed; padding: 34px 42px; }
+.upload-layout { width: min(760px, 100%); display: flex; align-items: center; justify-content: space-between; gap: 30px; }
+.upload-copy { display: flex; align-items: center; gap: 14px; }
+.upload-icon { width: 46px; height: 46px; display: grid; place-items: center; border-radius: 12px; color: var(--accent); background: rgba(167,244,95,.09); }
+.simple-upload h2 { margin: 0 0 5px; font-size: 21px; font-weight: 650; letter-spacing: -.025em; }
 .simple-upload p { margin: 0 0 20px; color: var(--muted); font-size: 11px; letter-spacing: .02em; }
+.upload-action { display: grid; justify-items: end; gap: 8px; }
+.upload-action span { color: var(--muted); font-size: 10px; }
 .simple-upload input { display: none; }
 .simple-workspace { display: grid; gap: 14px; }
 .annotation-panel { padding: 16px; }
@@ -242,4 +250,8 @@ button { cursor: pointer; }
   .action-bar .nav-actions { display: grid; grid-template-columns: 1fr 1fr; }
   .live-controls { align-items: stretch; flex-wrap: wrap; }
   .live-source-name { width: 100%; margin-left: 0; }
+  .workflow-strip { gap: 7px; font-size: 10px; }
+  .workflow-strip i { width: 12px; }
+  .upload-layout { align-items: stretch; flex-direction: column; gap: 20px; }
+  .upload-action { justify-items: start; }
 }

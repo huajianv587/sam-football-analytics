@@ -146,10 +146,18 @@ export function OfflineAnalyzer() {
         <div className="source-modes" aria-label="Input sources"><span className="source-mode active"><Play size={14} /> FILE</span><span className="source-mode"><Radio size={14} /> LIVE STREAM</span><span className="source-mode"><Camera size={14} /> FIELD CAMERA</span><span className="source-mode"><Plane size={14} /> DRONE FEED</span></div>
       </header>
 
+      <div className="workflow-strip" aria-label="Analysis workflow">
+        <span><b>01</b> Upload clip</span><i />
+        <span><b>02</b> Detect + track</span><i />
+        <span><b>03</b> Inspect with SAM</span>
+      </div>
+
       {!videoUrl && !jobId ? (
         <section className="panel simple-upload">
-          <CloudUpload size={42} /><h2>Select match footage</h2><p>H.264 MP4 · up to 60 seconds · 50 MB maximum · continuous shot</p>
-          <label className="button button-primary">SELECT VIDEO<input type="file" accept="video/mp4,.mp4" onChange={(event) => chooseFile(event.target.files?.[0])} /></label>
+          <div className="upload-layout">
+            <div className="upload-copy"><span className="upload-icon"><CloudUpload size={24} /></span><div><h2>Select match footage</h2><p>H.264 MP4 · up to 60 seconds · 50 MB maximum</p></div></div>
+            <div className="upload-action"><label className="button button-primary">SELECT VIDEO<input type="file" accept="video/mp4,.mp4" onChange={(event) => chooseFile(event.target.files?.[0])} /></label><span>Continuous shot recommended</span></div>
+          </div>
           {message && <p className="form-error">{message}</p>}
         </section>
       ) : videoUrl ? (
