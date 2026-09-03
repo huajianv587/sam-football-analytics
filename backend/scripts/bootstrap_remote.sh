@@ -24,7 +24,7 @@ conda run -p "$ENV_DIR" pip install --upgrade pip
 conda run -p "$ENV_DIR" pip install torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cu128
 conda run -p "$ENV_DIR" pip install \
   easyocr==1.7.2 opencv-python-headless==5.0.0.93 scipy==1.17.1 scikit-learn==1.9.0 \
-  fastapi==0.116.1 "uvicorn[standard]==0.35.0" ultralytics==8.4.138
+  fastapi==0.116.1 "uvicorn[standard]==0.35.0" ultralytics==8.4.138 "lap>=0.5.12"
 
 if [[ ! -s "$RUNTIME_DIR/easyocr/model/english_g2.pth" ]]; then
   conda run -p "$ENV_DIR" python -c 'import easyocr; easyocr.Reader(["en"], gpu=False)'

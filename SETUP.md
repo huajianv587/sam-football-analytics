@@ -156,7 +156,7 @@ Backend:
 
 ```bash
 cd backend
-uv sync --extra test
+uv sync --extra live --extra test
 uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
