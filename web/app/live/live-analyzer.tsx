@@ -163,8 +163,12 @@ export function LiveAnalyzer() {
       (event.clientY - rect.top) * canvas.height / rect.height,
     );
     if (!track) return;
-    setSelectedId(track.track_id);
-    socketRef.current?.send(JSON.stringify({ type: "select", track_id: track.track_id }));
+    selectTrack(track.track_id);
+  }
+
+  function selectTrack(trackId: number) {
+    setSelectedId(trackId);
+    socketRef.current?.send(JSON.stringify({ type: "select", track_id: trackId }));
   }
 
   function clearSelection() {
@@ -239,6 +243,7 @@ export function LiveAnalyzer() {
               <button className="button button-secondary live-clear" onClick={clearSelection}>CLEAR SELECTION</button>
             </> : <div className="live-unselected"><Users size={30} /><h3>Select any person</h3><p>All people use lightweight Masks. Clicking a Track activates SAM refinement for that person only.</p></div>}
           </section>
+          {tracks.length > 0 && <section className="panel live-track-panel"><div className="panel-title"><h3>VISIBLE TRACKS</h3><span>{tracks.length}</span></div><div className="live-track-list">{tracks.map((track) => <button key={track.track_id} className={`live-track-chip ${selectedId === track.track_id ? "active" : ""}`} onClick={() => selectTrack(track.track_id)}>ID {track.track_id}<span>{Math.round(track.confidence * 100)}%</span></button>)}</div></section>}
           <p className="micro muted">Browser video and camera are live now. RTSP/ONVIF/HLS gateways use the same frame protocol when deployed beside the camera.</p>
         </aside>
       </div>
@@ -271,11 +276,27 @@ function drawTrack(context: CanvasRenderingContext2D, track: LiveTrack, mode: Li
   context.fillStyle = color;
   context.fillText(label, x1 + 5, Math.max(13, y1 - 5));
   if (selected && track.trail.length > 1) {
-    context.beginPath();
-    track.trail.forEach(([x, y], index) => index ? context.lineTo(x, y) : context.moveTo(x, y));
+    // A tracker can briefly reuse an ID after a difficult association. Do
+    // not expose the resulting impossible cross-field jump as a trajectory.
+    const maxJump = Math.max(context.canvas.width, context.canvas.height) * 0.18;
     context.strokeStyle = "#a7f45f";
     context.lineWidth = 3;
-    context.stroke();
+    let segment: Array<[number, number]> = [];
+    const drawSegment = () => {
+      if (segment.length < 2) return;
+      context.beginPath();
+      segment.forEach(([x, y], index) => index ? context.lineTo(x, y) : context.moveTo(x, y));
+      context.stroke();
+    };
+    track.trail.forEach((point) => {
+      const previous = segment.at(-1);
+      if (previous && Math.hypot(point[0] - previous[0], point[1] - previous[1]) > maxJump) {
+        drawSegment();
+        segment = [];
+      }
+      segment.push(point);
+    });
+    drawSegment();
   }
 }
 
