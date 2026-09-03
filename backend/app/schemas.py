@@ -148,6 +148,7 @@ class VideoSessionResponse(BaseModel):
     width: int = Field(gt=0)
     height: int = Field(gt=0)
     track_count: int = Field(ge=0)
+    executor: Literal["a40", "mac_mps", "cpu"] = "a40"
     message: str | None = None
 
 

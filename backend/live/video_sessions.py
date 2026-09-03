@@ -35,15 +35,19 @@ class VideoSession:
     processed_frames: int = 0
     track_count: int = 0
     message: str | None = None
+    executor: str = "a40"
     frames: list[dict] = field(default_factory=list)
     refinements: dict[str, dict] = field(default_factory=dict)
 
 
 class VideoSessionManager:
-    def __init__(self, root: Path | None = None, live_ws_url: str | None = None) -> None:
+    def __init__(self, root: Path | None = None, live_ws_url: str | None = None, local_ws_url: str | None = None) -> None:
         self.root = (root or Path(".cache/live-video")).resolve()
         self.live_ws_url = live_ws_url or os.getenv(
             "LIVE_WS_URL", "ws://127.0.0.1:8010/v1/live/ws"
+        )
+        self.local_ws_url = local_ws_url or os.getenv(
+            "LOCAL_LIVE_WS_URL", "ws://127.0.0.1:8011/v1/live/ws"
         )
         self.sessions: dict[str, VideoSession] = {}
         self.tasks: dict[str, asyncio.Task[None]] = {}
@@ -101,6 +105,16 @@ class VideoSessionManager:
         cached = session.refinements.get(key)
         if cached:
             return cached
+        if session.executor != "a40":
+            result = {
+                "state": "failed",
+                "track_id": track_id,
+                "frame_start": 0,
+                "frame_end": 0,
+                "message": "SAM refinement requires A40; the lightweight Mask remains active on Mac fallback.",
+            }
+            session.refinements[key] = result
+            return result
         result = {"state": "queued", "track_id": track_id, "frame_start": 0, "frame_end": 0}
         session.refinements[key] = result
         asyncio.create_task(self._run_refinement(session, key, track_id, center_frame, radius))
@@ -115,12 +129,45 @@ class VideoSessionManager:
         session.state = "running"
         session.stage = "detect"
         try:
-            async with connect(self.live_ws_url, max_size=16 * 1024 * 1024) as websocket:
-                loading = json.loads(await websocket.recv())
-                ready = json.loads(await websocket.recv())
-                if loading.get("state") != "loading" or ready.get("state") != "ready":
-                    raise RuntimeError(ready.get("message") or "A40 live worker was not ready")
-                capture = cv2.VideoCapture(str(session.source_path))
+            await self._run_with_worker(session, self.live_ws_url)
+            session.executor = "a40"
+        except Exception as remote_error:
+            if session.processed_frames:
+                session.frames.clear()
+                session.processed_frames = 0
+                session.track_count = 0
+                session.progress = 0.0
+            try:
+                await self._run_with_worker(session, self.local_ws_url)
+                session.executor = "mac_mps"
+            except Exception as local_error:
+                session.state = "failed"
+                session.stage = "failed"
+                session.message = f"A40 unavailable; Mac fallback unavailable: {local_error}"[:500]
+                return
+        try:
+            if session.processed_frames != session.total_frames:
+                raise RuntimeError(
+                    f"decoded {session.processed_frames} of {session.total_frames} frames"
+                )
+            with gzip.open(session.result_path, "wt", encoding="utf-8") as handle:
+                json.dump(session.frames, handle, separators=(",", ":"))
+            session.stage = "finalize"
+            session.progress = 100.0
+            session.state = "ready"
+        except Exception as exc:
+            session.state = "failed"
+            session.stage = "failed"
+            session.message = str(exc)[:500]
+
+    async def _run_with_worker(self, session: VideoSession, worker_url: str) -> None:
+        async with connect(worker_url, max_size=16 * 1024 * 1024) as websocket:
+            loading = json.loads(await websocket.recv())
+            ready = json.loads(await websocket.recv())
+            if loading.get("state") != "loading" or ready.get("state") != "ready":
+                raise RuntimeError(ready.get("message") or "live worker was not ready")
+            capture = cv2.VideoCapture(str(session.source_path))
+            try:
                 while True:
                     ok, frame = capture.read()
                     if not ok:
@@ -136,7 +183,7 @@ class VideoSessionManager:
                     )
                     payload = json.loads(await websocket.recv())
                     if payload.get("type") != "frame":
-                        raise RuntimeError(payload.get("message") or "A40 returned an invalid frame")
+                        raise RuntimeError(payload.get("message") or "live worker returned an invalid frame")
                     session.frames.append(payload)
                     session.processed_frames += 1
                     session.track_count = max(
@@ -146,20 +193,8 @@ class VideoSessionManager:
                     session.progress = round(
                         session.processed_frames / max(session.total_frames, 1) * 100, 2
                     )
+            finally:
                 capture.release()
-            if session.processed_frames != session.total_frames:
-                raise RuntimeError(
-                    f"decoded {session.processed_frames} of {session.total_frames} frames"
-                )
-            with gzip.open(session.result_path, "wt", encoding="utf-8") as handle:
-                json.dump(session.frames, handle, separators=(",", ":"))
-            session.stage = "finalize"
-            session.progress = 100.0
-            session.state = "ready"
-        except Exception as exc:
-            session.state = "failed"
-            session.stage = "failed"
-            session.message = str(exc)[:500]
 
     async def _run_refinement(
         self,

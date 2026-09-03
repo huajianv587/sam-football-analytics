@@ -21,7 +21,7 @@ class LiveInferenceEngine:
     def __init__(self) -> None:
         from ultralytics import YOLO
 
-        self.device = os.getenv("LIVE_DEVICE", "0")
+        self.device = self._resolve_device(os.getenv("LIVE_DEVICE", "auto"))
         # 960 keeps distant people in a broadcast frame while remaining
         # real-time on an A40. Both
         # values stay configurable for weaker edge hardware.
@@ -38,9 +38,26 @@ class LiveInferenceEngine:
         self.lock = Lock()
         self.sam_predictor: Any | None = None
         self._last_refined_mask: list[tuple[float, float]] = []
-        self.sam_enabled = os.getenv("LIVE_SAM_ENABLED", "true").lower() == "true"
+        self.sam_enabled = os.getenv("LIVE_SAM_ENABLED", "true").lower() == "true" and self.device.startswith("cuda")
         if self.sam_enabled:
             self._load_sam()
+
+    @staticmethod
+    def _resolve_device(requested: str) -> str:
+        if requested != "auto":
+            # Slurm exposes a selected GPU as "0". Ultralytics accepts it,
+            # but the rest of this service needs a canonical CUDA name to
+            # enable FP16 and the CUDA-only SAM refinement path.
+            if requested.isdigit():
+                return f"cuda:{requested}"
+            return requested
+        import torch
+
+        if torch.cuda.is_available():
+            return "cuda:0"
+        if torch.backends.mps.is_available():
+            return "mps"
+        return "cpu"
 
     def _load_sam(self) -> None:
         checkpoint = Path(os.getenv("LIVE_SAM_CHECKPOINT", ""))
@@ -53,7 +70,7 @@ class LiveInferenceEngine:
         from sam2.build_sam import build_sam2
         from sam2.sam2_image_predictor import SAM2ImagePredictor
 
-        model = build_sam2(config, str(checkpoint), device="cuda")
+        model = build_sam2(config, str(checkpoint), device=self.device)
         self.sam_predictor = SAM2ImagePredictor(model)
 
     @property
@@ -112,7 +129,7 @@ class LiveInferenceEngine:
                 iou=0.55,
                 imgsz=self.image_size,
                 device=self.device,
-                half=True,
+                half=self.device.startswith("cuda"),
                 verbose=False,
             )[0]
             tracks = self._tracks(result, frame, frame_id, timestamp, selected_id, refine_bbox)

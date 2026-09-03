@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -53,3 +54,38 @@ def test_refinement_status_is_missing_until_request_is_queued(tmp_path: Path) ->
     status = manager.refinement_status("session-1", 4, 10, 15)
     assert status["state"] == "missing"
     assert status["track_id"] == 4
+
+
+def test_mac_fallback_completes_when_a40_worker_is_unreachable(tmp_path: Path) -> None:
+    manager, session = make_session(tmp_path)
+    session.state = "queued"
+    calls: list[str] = []
+
+    async def fake_worker(current: VideoSession, worker_url: str) -> None:
+        calls.append(worker_url)
+        if worker_url == "ws://a40/v1/live/ws":
+            raise ConnectionRefusedError("A40 unavailable")
+        current.processed_frames = current.total_frames
+        current.progress = 100.0
+        current.track_count = 2
+
+    manager.live_ws_url = "ws://a40/v1/live/ws"
+    manager.local_ws_url = "ws://mac/v1/live/ws"
+    manager._run_with_worker = fake_worker  # type: ignore[method-assign]
+
+    asyncio.run(manager._run(session))
+
+    assert calls == ["ws://a40/v1/live/ws", "ws://mac/v1/live/ws"]
+    assert session.state == "ready"
+    assert session.executor == "mac_mps"
+    assert session.result_path.is_file()
+
+
+def test_mac_fallback_refinement_reports_its_capability_boundary(tmp_path: Path) -> None:
+    manager, session = make_session(tmp_path)
+    session.executor = "mac_mps"
+
+    result = asyncio.run(manager.refine(session.session_id, 1, 1, 15))
+
+    assert result["state"] == "failed"
+    assert "requires A40" in result["message"]

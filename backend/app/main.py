@@ -53,8 +53,7 @@ async def health() -> HealthResponse:
     return HealthResponse()
 
 
-def _a40_available() -> bool:
-    websocket_url = os.getenv("LIVE_WS_URL", "ws://127.0.0.1:8010/v1/live/ws")
+def _worker_available(websocket_url: str) -> bool:
     health_url = websocket_url.replace("ws://", "http://").replace("wss://", "https://").replace("/v1/live/ws", "/health")
     try:
         with urlopen(health_url, timeout=1.5) as response:
@@ -74,13 +73,14 @@ def _mac_mps_available() -> bool:
 
 @app.get("/v1/live/availability", response_model=LiveAvailabilityResponse)
 async def live_availability() -> LiveAvailabilityResponse:
-    a40_available = await asyncio.to_thread(_a40_available)
+    a40_available = await asyncio.to_thread(_worker_available, os.getenv("LIVE_WS_URL", "ws://127.0.0.1:8010/v1/live/ws"))
     mac_mps_available = await asyncio.to_thread(_mac_mps_available)
+    local_worker_available = await asyncio.to_thread(_worker_available, os.getenv("LOCAL_LIVE_WS_URL", "ws://127.0.0.1:8011/v1/live/ws"))
     if a40_available:
-        return LiveAvailabilityResponse(selected_executor="a40", a40_available=True, mac_mps_available=mac_mps_available, local_worker_available=False, message="A40 inference is ready")
-    if mac_mps_available:
-        return LiveAvailabilityResponse(selected_executor="mac_mps", a40_available=False, mac_mps_available=True, local_worker_available=False, message="A40 is unavailable; Mac MPS fallback is selected")
-    return LiveAvailabilityResponse(selected_executor="cpu", a40_available=False, mac_mps_available=False, local_worker_available=False, message="A40 is unavailable; CPU fallback is selected")
+        return LiveAvailabilityResponse(selected_executor="a40", a40_available=True, mac_mps_available=mac_mps_available, local_worker_available=local_worker_available, message="A40 inference is ready")
+    if mac_mps_available and local_worker_available:
+        return LiveAvailabilityResponse(selected_executor="mac_mps", a40_available=False, mac_mps_available=True, local_worker_available=True, message="A40 unavailable; Mac MPS is processing locally")
+    return LiveAvailabilityResponse(selected_executor="cpu", a40_available=False, mac_mps_available=mac_mps_available, local_worker_available=local_worker_available, message="No GPU worker is reachable; CPU fallback is selected")
 
 
 def video_session_response(session) -> VideoSessionResponse:
@@ -97,6 +97,7 @@ def video_session_response(session) -> VideoSessionResponse:
         width=session.width,
         height=session.height,
         track_count=session.track_count,
+        executor=session.executor,
         message=session.message,
     )
 
