@@ -501,7 +501,7 @@ npm run lint
 npm run build
 ```
 
-The current codebase passes 67 backend tests, 10 frontend tests, ESLint and the
+The current codebase passes 71 backend tests, 10 frontend tests, ESLint and the
 Next.js production build. GPU artifacts are additionally checked with
 `backend/scripts/validate_artifacts.py`.
 
