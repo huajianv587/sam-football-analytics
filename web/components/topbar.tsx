@@ -1,7 +1,7 @@
 import { Crosshair } from "lucide-react";
 import Link from "next/link";
 
-export function Topbar({ signedIn = false }: { signedIn?: boolean }) {
+export function Topbar({ signedIn = false, mode = "offline" }: { signedIn?: boolean; mode?: "offline" | "live" }) {
   return (
     <header className="topbar">
       <div className="container topbar-inner">
@@ -10,8 +10,8 @@ export function Topbar({ signedIn = false }: { signedIn?: boolean }) {
           <span>PitchVision</span>
         </Link>
         <nav className="nav-actions">
-          <span className="button button-ghost">LIVE INPUT / ROADMAP</span>
-          <Link className="button button-primary" href={signedIn ? "/projects" : "/"}>{signedIn ? "PROJECTS" : "OFFLINE WORKSPACE"}</Link>
+          <Link className={`button ${mode === "live" ? "button-primary" : "button-ghost"}`} href="/live">LIVE INPUT</Link>
+          <Link className={`button ${mode === "offline" ? "button-primary" : "button-secondary"}`} href={signedIn ? "/projects" : "/"}>{signedIn ? "PROJECTS" : "OFFLINE WORKSPACE"}</Link>
         </nav>
       </div>
     </header>

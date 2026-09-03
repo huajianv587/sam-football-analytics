@@ -5,8 +5,8 @@ import "./globals.css";
 const manrope = Manrope({ subsets: ["latin"], variable: "--font-manrope" });
 
 export const metadata: Metadata = {
-  title: "PitchVision — SAM Football Analytics",
-  description: "SAM 2.1 player segmentation, persistent tracking, speed, trajectory, and occlusion analytics.",
+  title: "PitchVision — Real-time Person Analytics",
+  description: "Sport-agnostic person Masks, persistent tracking, selected-target SAM refinement, speed and trajectory analytics.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

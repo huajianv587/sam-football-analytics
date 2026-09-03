@@ -1,69 +1,93 @@
-# PitchVision — Automatic Football Tracking with SAM 2.1
+# PitchVision — Real-time Multi-Sport Person Masks with SAM 2.1
 
-PitchVision is an end-to-end football video intelligence system. Upload one
-continuous MP4 and it automatically detects the people on the pitch, assigns
-Track IDs, reconstructs the pitch geometry, computes a pixel-accurate SAM 2.1
-Mask for every valid Track, and returns an interactive analysis workspace.
+PitchVision is a two-mode person video intelligence system built for sports and
+general human scenes:
 
-The initial view stays lightweight: every visible subject gets a thin box and
-ID. Click a player to lazy-load only that Track's Mask and show the trajectory,
-speed, distance, team, role, jersey identity confidence and occlusion summary.
-No first-frame boxes, manual calibration or login page are required. Base+
-Masks are immediately available after the offline analysis. A selected player
-can optionally be reprocessed by SAM Large as an explicit quality upgrade.
+- **Live:** a sport-agnostic instance-segmentation model produces a lightweight
+  Mask, box and persistent Track ID for every visible person. Clicking one
+  Track replaces only that contour with a SAM 2.1 Base+ refinement while every
+  other person continues through the lightweight path.
+- **Offline:** the original football analytics pipeline reconstructs pitch
+  geometry, precomputes high-quality SAM Masks, derives metric movement and
+  persists auditable artifacts in Supabase.
+
+The live model filters the generic COCO `person` class, not a football class.
+The same path therefore applies to football, basketball, athletics, training
+sessions, handheld footage, field cameras and ordinary crowd scenes. Sport
+semantics and court calibration are optional analytics layers rather than
+requirements for detection, Mask rendering or identity tracking.
 
 This is a portfolio-grade system rather than a model notebook. It integrates a
-compact Next.js interface, typed FastAPI control plane, Supabase persistence,
-Slurm orchestration, a football-specific detector/ReID/tracker/calibrator, SAM
-video segmentation, reproducible artifact checks and measured A40 performance.
+compact Next.js interface, a binary WebSocket live protocol, a dedicated A40
+inference service, typed FastAPI offline control plane, Supabase persistence,
+Slurm orchestration, SAM video segmentation, reproducible checks and measured
+GPU performance.
 
 ## Product flow
 
-1. Open the local workspace and upload an H.264 MP4.
+### Live
+
+1. Open `/live` and choose any video or browser camera.
+2. The browser keeps at most one JPEG frame in flight to the tunneled A40 worker;
+   slow inference drops capture opportunities instead of building latency.
+3. YOLO11 Segment returns every person's box, confidence and Mask while
+   ByteTrack keeps a persistent ID.
+4. The server sends compact Mask polygons, movement trails and telemetry through
+   one binary WebSocket session.
+5. `ALL MASKS` draws every lightweight Mask, `SELECTED ONLY` draws only the
+   active Track, and `BOXES` removes all Mask fills.
+6. Clicking a person sends only its Track ID. Subsequent frames use SAM Base+
+   for that person while everyone else stays lightweight.
+7. The UI renders the exact captured frame that produced each response, so a
+   delayed contour is never painted over a newer video frame.
+
+### Offline
+
+1. Open `/` and upload a continuous H.264 MP4 without logging in or annotating.
 2. FastAPI stores the source in a private owner-scoped Supabase path and submits
    one Slurm job.
 3. The A40 job runs Normalize, Detect/Track/Calibrate, Segment, Identify and
    Upload stages.
-4. The result page draws all current Track boxes without downloading dozens of
-   full-resolution Masks.
-5. Clicking a box selects the smallest overlapping box under the pointer, then
-   downloads and caches only `masks/{track_id}.json.gz`.
-6. A directly verified Mask is drawn when available. If quality gating rejects
-   one isolated frame, the browser projects the nearest verified Mask crop onto
-   that Track's current detector box so the selected overlay does not blink;
-   this display interpolation never changes stored inference metrics.
-7. Clicking another person switches immediately; previously loaded Masks remain
-   in the browser cache.
-8. A verified Supabase roster can override an uncertain automatic identity and
-   persists after refresh.
+4. Clicking a result Track lazy-loads its independent Mask artifact, trajectory,
+   speed, distance, identity and occlusion summary.
+5. A directly verified Mask is drawn when available; an isolated gated frame is
+   bridged only in the browser from the nearest verified contour.
 
 Roster data is optional. Arbitrary footage uses `Unspecified Match`, `Team A`
 and `Team B`; when no matching roster rows exist, identity stays
 `Unidentified` while boxes, Masks, trajectories, speed, distance and occlusion
 analytics continue normally.
 
-The present release processes offline MP4 files. RTSP/HLS, browser cameras,
-handheld cameras and drone feeds are a future input layer over the same
-normalized-frame boundary.
+Roster data is never required for live tracking. Without external identity data,
+a subject stays `Unidentified` while Mask, ID, pixel speed and trajectory remain
+available. Metric speed requires a valid sport-specific Homography; arbitrary
+video reports pixel speed instead of inventing km/h.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    U[Next.js workspace] -->|MP4 upload and polling| A[FastAPI controller]
+    C[Video file or browser camera] -->|one JPEG in flight| W[Binary WebSocket]
+    W --> Y[YOLO11s Segment: all person Masks]
+    Y --> B[ByteTrack: persistent IDs]
+    B -->|all lightweight polygons| U[Next.js Canvas]
+    U -->|selected Track ID| SR[SAM 2.1 Base+ image refinement]
+    SR -->|selected high-quality polygon| U
+
+    U -->|offline MP4 upload and polling| A[FastAPI controller]
     U -->|signed result reads| S[(Supabase Postgres and private Storage)]
     A -->|projects, roster, artifacts| S
     A -->|SSH and rsync| L[Slurm login node]
     L -->|one normal-QoS job| G[NVIDIA A40 worker]
 
-    subgraph R[Multi-rate game-state reconstruction]
+    subgraph GSR[Multi-rate game-state reconstruction]
       D[Football YOLO at 10 FPS] --> T[Two-stage field-space association]
       E[Appearance descriptor at 5 FPS] --> T
       H[PnLCalib at 5 FPS] --> T
     end
 
-    G --> R
-    R -->|15 FPS boxes, Track IDs and pitch coordinates| M[SAM 2.1 Base+ in 90-frame windows]
+    G --> GSR
+    GSR -->|15 FPS boxes, Track IDs and pitch coordinates| M[SAM 2.1 Base+ in 90-frame windows]
     M --> X[Per-track cropped RLE Masks]
     X -->|selected Track only| Z[Optional SAM 2.1 Large refinement]
     X --> Q[Speed, team, OCR, occlusion, foreground video]
@@ -74,34 +98,89 @@ flowchart LR
 
 | Layer | Technology | Responsibility |
 | --- | --- | --- |
-| Web | Next.js 16, React 19, TypeScript, Tailwind, Canvas | Direct upload, real progress, box hit-testing, lazy Mask rendering, trajectory, pitch heatmap, identity correction |
+| Web | Next.js 16, React 19, TypeScript, Tailwind, Canvas | Live capture, exact-frame drawing, all-Mask modes, box hit-testing, offline results and trajectory panels |
+| Live inference | FastAPI WebSocket, YOLO11s Segment, ByteTrack, SAM 2.1 Image Predictor | Generic all-person lightweight Masks and selected-person SAM refinement |
 | Controller | FastAPI, Pydantic, Supabase client | Local-admin ownership, validation, Storage sync, SSH/rsync, Slurm state, result verification |
 | Game state | football YOLO, SciPy assignment, OpenCV appearance, PnLCalib | 10 FPS detection, field-registered two-stage association, camera-cut handling and interpolated calibration |
 | Segmentation | SAM 2.1 Hiera Base+ and Large, PyTorch compile, CUDA | Windowed all-person Masks plus optional selected-player refinement |
 | Analytics | OpenCV, NumPy, EasyOCR, FFmpeg | Fused foot observations, field-state smoothing, metric speed/distance, identity, occlusion and foreground export |
 | Data | Supabase Postgres, private Storage, RLS | Projects, tracks, verified roster, source videos, final artifacts |
-| Compute | Slurm, one NVIDIA A40 | Reproducible offline inference without a permanent GPU service |
+| Compute | Slurm, one NVIDIA A40 | Six-hour live allocation or reproducible offline job |
 
 ## Why the hybrid architecture
 
-YOLO and SAM solve different problems.
+Lightweight instance segmentation, tracking and SAM solve different problems.
 
-- The football detector answers **who is visible and where?**
-- The field-space tracker answers **which temporal identity owns this box?**
+- YOLO11 Segment answers **who is visible and what is the low-cost contour?**
+- ByteTrack answers **which temporal identity owns this observation?**
 - PnLCalib answers **where is the image point on a 105 x 68 metre pitch?**
-- SAM answers **which pixels belong to this Track?**
+- SAM answers **what is the refined contour of the selected Track?**
 
 Using SAM as the identity tracker would make IDs depend on segmentation memory.
 Using detector boxes as the final visualization would lose body contours and
 foreground extraction. PitchVision keeps Track ID as the identity authority and
 SAM as the pixel authority.
 
-All valid Base+ Track Masks are precomputed once on the A40. “On demand” first
-means browser transfer, decoding and rendering, so clicking is immediate. The
-separate Large button is an optional background refinement for one already
-tracked person; it is never required to inspect the Base+ result.
+In live mode, all people always retain inexpensive instance Masks; SAM compute
+scales with one selected person rather than the entire scene. In offline mode,
+all valid Base+ Track Masks are precomputed once and split by Track. The two
+modes share the rule that Track ID—not SAM memory—is the identity authority.
 
-## GPU pipeline
+## Live GPU pipeline
+
+### All-person lightweight path
+
+- `yolo11s-seg.pt` runs at 640-pixel inference size with FP16 on CUDA.
+- Only the generic COCO `person` class is retained. No football, basketball or
+  stadium classifier is required.
+- Each model result contains aligned per-person box, confidence and instance
+  Mask. Mask contours are simplified before JSON serialization.
+- ByteTrack state persists within one WebSocket session. A new camera session
+  resets tracker state so unrelated streams cannot share IDs.
+- Bottom-centre observations feed an EMA pixel-velocity state and short trail.
+  Histories survive brief detection gaps and expire after 15 missing frames.
+
+### Selected-person SAM path
+
+- Clicking chooses the smallest overlapping Box and sends `{track_id}`.
+- For that Track only, SAM 2.1 Base+ receives the current detector box as an
+  image prompt. The highest-scoring SAM contour replaces the lightweight one.
+- Switching targets changes the prompt owner on the next processed frame. A
+  `null` selection returns to all-lightweight inference.
+- This live implementation deliberately uses the image predictor per incoming
+  frame. The official video predictor expects a known video/frame store; the
+  incremental-camera memory loop is a separate optimization, not assumed here.
+
+### Transport and rendering
+
+- Each binary client packet is `uint32 frame_id + float64 monotonic timestamp +
+  JPEG bytes`, all in network byte order.
+- The server returns boxes, compact polygons, trails, pixel speed, model source,
+  inference latency and rolling processing FPS.
+- Only one frame is in flight. The browser stores its `ImageBitmap` and draws
+  that exact frame when the matching response arrives.
+- Canvas/WebGL capacity is not the limiting factor: all lightweight Masks can
+  be drawn simultaneously. `BOXES` is a user-selected performance/debug view,
+  not a technical requirement.
+
+### Live benchmark status
+
+The live worker was verified through the TC2 SSH tunnel on one NVIDIA A40 using
+the public Ultralytics `bus.jpg` sample resized to 640 x 480. After warm-up, all
+12 lightweight frames contained four tracked people: mean YOLO11s-seg
+inference was **49.4 ms** (about **19.2 FPS**), with stable IDs `1..4`.
+Selecting Track 1 on the next frame returned a SAM Base+ polygon with 20
+vertices in **154.5 ms**; the other tracks remained lightweight Masks. These
+figures measure the inference service only, excluding browser capture and SSH
+transport, and are a smoke benchmark rather than a domain accuracy claim.
+
+The COCO person model is intentionally sport-agnostic. Broadcast football
+players can be very small, so a production sports profile should increase
+`LIVE_IMAGE_SIZE` (for example 960 or 1280) or use a domain-trained person
+segmenter; that trades throughput for recall. The reproducible live commands
+and the exact model checksum are in `SETUP.md` and `THIRD_PARTY_NOTICES.md`.
+
+## Offline GPU pipeline
 
 ### 1. Normalize
 
@@ -276,33 +355,35 @@ not evidence that the verified roster or manual correction path is broken.
 
 ## Author's design philosophy
 
-1. **Identity and pixels need separate owners.** Tracking-by-detection owns the
-   ID; SAM owns the contour. Mixing those responsibilities makes failures hard
-   to diagnose.
-2. **Immediate interaction is a data-layout problem.** Precompute all valid
-   Masks once, split them by Track, then transfer and render only the selected
-   subject.
+1. **Identity and pixels need separate owners.** Online tracking owns the ID;
+   the lightweight model owns the default contour; SAM owns only the selected
+   refinement. Mixing those responsibilities makes failures hard to diagnose.
+2. **Real time is a queueing property.** One exact frame stays in flight and a
+   slow worker drops capture opportunities. Unbounded queues produce an old
+   video accurately, not a live system.
 3. **A wrong identity is worse than a new identity.** Temporal tracking gates,
    disabled global appearance-only concatenation, a 0.7-second tracker gate and
    a two-second all-person Mask gate avoid presenting detector fragments as
    meaningful people or stitching two similar shirts into one player.
-4. **Spend compute where evidence changes.** Detection needs 10 FPS, appearance
-   and calibration do not; SAM needs 15 FPS contours but only over active Track
-   lifetimes. Fixed compile shapes are useful, dummy VRAM allocation is not.
+4. **Spend compute where attention changes.** All people need inexpensive Masks
+   and IDs; only the person a user inspects needs SAM refinement. Offline jobs
+   may still spend more compute because they are evaluated as artifacts.
 5. **Missing evidence must stay missing.** Invalid calibration means no metric
    speed; unreadable numbers mean `Unidentified`; an unlabelled clip means no
    fabricated IDF1 or Mask IoU claim.
 6. **Artifacts are the completion gate.** A successful Python process or Slurm
    state is insufficient. Every gzip must decode, both videos must fully play,
    result counts must agree and the browser must load a selected Track.
-7. **Keep the control plane small.** FastAPI, system SSH/rsync, one Slurm job and
-   Supabase are enough for the offline workload. Redis, Celery and a permanent
-   GPU service can wait until live input creates real backpressure.
+7. **Keep the control plane small.** One WebSocket owns one live stream and one
+   GPU engine. FastAPI, system SSH/rsync, Slurm and Supabase remain sufficient;
+   Redis and Celery are unnecessary for the single-demo concurrency goal.
 
 ## API
 
 | Method | Endpoint | Description |
 | --- | --- | --- |
+| `GET` | live worker `/health` | Generic model, load and SAM capability state |
+| `WS` | live worker `/v1/live/ws` | Binary frames, target selection and live person results |
 | `GET` | `/health` | Controller and scheduler identity |
 | `POST` | `/v1/offline/jobs` | Direct local-admin MP4 upload and automatic submission |
 | `GET` | `/v1/offline/jobs/{project_id}` | Offline stage, progress, Job ID and Track count |
@@ -321,9 +402,10 @@ files are present and non-empty.
 
 ```text
 .
-├── web/                         Next.js upload and interactive result workspace
+├── web/                         Next.js offline and live Canvas workspaces
 ├── backend/
 │   ├── app/                     FastAPI, ownership, Supabase and Slurm control
+│   ├── live/                    Generic WebSocket instance segmentation service
 │   ├── gsr/                     Original integration configs/export adapters
 │   ├── worker/                  Game state, SAM propagation, RLE and analytics
 │   ├── scripts/                 Runtime bootstrap, sbatch and artifact validator
@@ -353,6 +435,14 @@ npm ci
 npm run dev
 ```
 
+For live mode, submit the six-hour A40 worker, open an SSH tunnel, then visit
+`http://localhost:3000/live`:
+
+```bash
+bash backend/scripts/submit_live.sh
+bash backend/scripts/live_tunnel.sh <job-id>
+```
+
 Verification:
 
 ```bash
@@ -363,14 +453,16 @@ npm run lint
 npm run build
 ```
 
-The current codebase passes 61 backend tests, 8 frontend tests, ESLint and the
+The current codebase passes 67 backend tests, 10 frontend tests, ESLint and the
 Next.js production build. GPU artifacts are additionally checked with
 `backend/scripts/validate_artifacts.py`.
 
 ## Limitations and roadmap
 
-- Continuous shots only. A camera cut creates new IDs; cross-shot identity is not
-  promised.
+- Live browser video and camera capture are implemented. Native GPU-side
+  RTSP/HLS ingest and WebRTC output remain adapters over the same result protocol.
+- A live stream owns one tracker session. A camera cut or reconnect creates new
+  IDs; cross-shot identity is not promised.
 - The field tracker rejects detections shorter than roughly 0.7 seconds; the
   expensive all-person Mask stage requires two seconds of accepted presence.
   Unmatched live Tracks expire after 1.5 seconds.
@@ -378,8 +470,10 @@ Next.js production build. GPU artifacts are additionally checked with
 - Automatic calibration may be unavailable for tight, replay or non-pitch views.
 - Public or commercial deployment requires authentication, privacy review,
   licensed footage and review of every upstream model/software license.
-- Next: RTSP/HLS/WebRTC adapters, browser/field/drone cameras, bounded frame
-  queues, backpressure, latency telemetry and multi-camera identity experiments.
+- Live metric speed requires a court/pitch Homography. Generic scenes report
+  honest pixel speed; automatic calibration across every sport is not claimed.
+- Next: native RTSP/HLS ingest, WebRTC media output, calibrated basketball and
+  athletics presets, TensorRT export and multi-camera identity experiments.
 
 See [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) before building or
 redistributing the GPU runtime.

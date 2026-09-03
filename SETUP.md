@@ -1,9 +1,9 @@
 # PitchVision Setup
 
 PitchVision runs the compact English web UI and FastAPI controller on the local
-machine, stores business data and final artifacts in Supabase, and submits one
-offline Slurm job to an NVIDIA A40. Passwords, API secrets, footage, model
-weights and generated artifacts never belong in Git.
+machine. Offline analysis stores final artifacts in Supabase; live analysis uses
+a six-hour A40 WebSocket worker through an SSH tunnel. Passwords, API secrets,
+footage, model weights and generated artifacts never belong in Git.
 
 ## 1. Prerequisites
 
@@ -28,6 +28,7 @@ Only these values may be exposed to the browser bundle:
 NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=
 NEXT_PUBLIC_INFERENCE_API_URL=http://127.0.0.1:8000
+NEXT_PUBLIC_LIVE_WS_URL=ws://127.0.0.1:8010/v1/live/ws
 ```
 
 The backend additionally requires:
@@ -86,6 +87,8 @@ The script creates:
 
 - a Python 3.11 SAM environment with PyTorch/CUDA, EasyOCR, FFmpeg and the
   compiled SAM 2 CUDA extension;
+- Ultralytics `8.4.138`, `yolo11s-seg.pt`, FastAPI and Uvicorn for generic
+  all-person live instance segmentation;
 - a separate SoccerNet/SoccerMaster game-state environment for football YOLO
   and PnLCalib, plus legacy PRTReID/StrongSORT compatibility components;
 - version-pinned checkpoints and checksum manifests under scratch.
@@ -104,6 +107,11 @@ the runtime or using it commercially.
 The checked-in `backend/scripts/job.sbatch` profile requests the authorized TC2
 `normal` QoS, one A40, 10 CPUs, 30 GB system RAM and a two-hour limit. Adjust the
 partition and resources for another cluster.
+
+The separate `backend/scripts/live.sbatch` requests the same CPU/GPU/memory
+profile for up to six hours and starts the live worker on the compute node. It
+binds only inside the cluster network; the browser reaches it through the SSH
+tunnel below.
 
 ### Default quality/performance profile
 
@@ -169,7 +177,48 @@ Expected response:
 {"status":"ok","scheduler":"tc2-slurm"}
 ```
 
-## 6. Run an analysis
+## 6. Start live person segmentation
+
+Submit the dedicated A40 worker. This syncs only backend source code into the
+configured scratch root and returns a Slurm Job ID:
+
+```bash
+bash backend/scripts/submit_live.sh
+```
+
+After `squeue` reports the job as running, keep this tunnel open in a separate
+terminal:
+
+```bash
+bash backend/scripts/live_tunnel.sh <job-id>
+```
+
+Verify the worker without loading the models:
+
+```bash
+curl http://127.0.0.1:8010/health
+```
+
+Open `http://localhost:3000/live` and choose a video or field camera. The first
+WebSocket session loads YOLO11 Segment and SAM Base+, so its initial ready state
+is slower than later connections.
+
+- `ALL MASKS`: draw every generic person instance Mask.
+- `SELECTED ONLY`: draw only the selected Track Mask.
+- `BOXES`: draw Track boxes and IDs without Mask fills.
+- Clicking a Track switches its Mask source from `lightweight` to `sam` on the
+  next processed frame. Clearing selection returns to all-lightweight mode.
+
+The browser keeps one exact frame in flight; if inference is slower than capture,
+it samples a newer frame instead of queuing old frames. Every response is drawn
+over the matching stored `ImageBitmap`, which trades a bounded amount of latency
+for correct visual alignment.
+
+Generic tracking always provides pixel speed. Add a validated sport-specific
+Homography before displaying km/h; the live page intentionally shows
+`Calibration required` instead of guessing physical units.
+
+## 7. Run an offline analysis
 
 1. Open the upload workspace; no login or annotation screen appears.
 2. Select an H.264 MP4, maximum 50 MB and 60 seconds.
@@ -195,7 +244,7 @@ and team labels through the API.
 Metric speed is hidden when automatic calibration is invalid. The UI never
 substitutes a fabricated `0 km/h`.
 
-## 7. Verification
+## 8. Verification
 
 ```bash
 backend/.venv/bin/python -m pytest -q
@@ -225,10 +274,11 @@ PYTHONPATH=backend backend/.venv/bin/python \
   /path/to/results /path/to/annotations.json
 ```
 
-## 8. Scope
+## 9. Scope
 
-- Offline MP4 only; RTSP/HLS/WebRTC, browser cameras and drone feeds are roadmap
-  input adapters.
+- Live browser video and camera input plus offline MP4 are implemented.
+- Native GPU-side RTSP/HLS ingest, WebRTC media output and drone transport are
+  roadmap adapters over the live result protocol.
 - Continuous broadcast shots only; camera cuts deliberately create new IDs.
 - Automatic OCR returns `Unidentified` when the number is not genuinely visible.
 - The repository contains no source footage, generated media, checkpoints or

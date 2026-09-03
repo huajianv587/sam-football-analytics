@@ -22,6 +22,9 @@ inference = [
   "scikit-learn>=1.7",
   "scipy>=1.16",
 ]
+live = [
+  "ultralytics==8.4.138",
+]
 test = [
   "pytest>=8.4",
   "pytest-asyncio>=1.1",
@@ -32,7 +35,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["app", "worker"]
+packages = ["app", "worker", "live"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

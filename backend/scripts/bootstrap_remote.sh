@@ -22,7 +22,9 @@ fi
 conda install -y -p "$ENV_DIR" -c conda-forge ffmpeg gxx_linux-64=13
 conda run -p "$ENV_DIR" pip install --upgrade pip
 conda run -p "$ENV_DIR" pip install torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cu128
-conda run -p "$ENV_DIR" pip install easyocr==1.7.2 opencv-python-headless==5.0.0.93 scipy==1.17.1 scikit-learn==1.9.0
+conda run -p "$ENV_DIR" pip install \
+  easyocr==1.7.2 opencv-python-headless==5.0.0.93 scipy==1.17.1 scikit-learn==1.9.0 \
+  fastapi==0.116.1 "uvicorn[standard]==0.35.0" ultralytics==8.4.138
 
 if [[ ! -s "$RUNTIME_DIR/easyocr/model/english_g2.pth" ]]; then
   conda run -p "$ENV_DIR" python -c 'import easyocr; easyocr.Reader(["en"], gpu=False)'
@@ -52,6 +54,14 @@ if [[ ! -s "$RUNTIME_DIR/checkpoints/sam2.1_hiera_base_plus.pt" ]]; then
     -o "$RUNTIME_DIR/checkpoints/sam2.1_hiera_base_plus.pt"
 fi
 echo "a2345aede8715ab1d5d31b4a509fb160c5a4af1970f199d9054ccfb746c004c5  $RUNTIME_DIR/checkpoints/sam2.1_hiera_base_plus.pt" | sha256sum -c -
+
+if [[ ! -s "$RUNTIME_DIR/checkpoints/yolo11s-seg.pt" ]]; then
+  (
+    cd "$RUNTIME_DIR/checkpoints"
+    conda run -p "$ENV_DIR" python -c 'from ultralytics import YOLO; YOLO("yolo11s-seg.pt")'
+  )
+fi
+echo "1caa81c0195412efa411b632bcfb8c184939dddb6ae41f6a80c41b211ff257c3  $RUNTIME_DIR/checkpoints/yolo11s-seg.pt" | sha256sum -c -
 
 echo "SAM 2 runtime ready at $RUNTIME_DIR"
 
@@ -172,6 +182,7 @@ sha256sum "$GSR_RUNTIME_DIR/pretrained_models/yolo/yolo_v8x6_finetuned.pt" \
   "$GSR_RUNTIME_DIR/pretrained_models/calibration/pnl_SV_lines" \
   "$RUNTIME_DIR/checkpoints/sam2.1_hiera_base_plus.pt" \
   "$RUNTIME_DIR/checkpoints/sam2.1_hiera_large.pt" \
+  "$RUNTIME_DIR/checkpoints/yolo11s-seg.pt" \
   > "$ROOT_DIR/MODEL_SHA256SUMS"
 
 echo "Soccer game-state runtime ready at $GSR_RUNTIME_DIR"
