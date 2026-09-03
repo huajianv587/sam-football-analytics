@@ -163,7 +163,7 @@ button { cursor: pointer; }
 .step-number { width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; background: rgba(18,42,29,.08); font-weight: 800; font-size: 12px; }
 .video-stage { position: relative; border-radius: 16px; overflow: hidden; background: #020604; aspect-ratio: 16 / 9; }
 .video-stage video, .video-stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
-.video-stage canvas { z-index: 2; }
+.video-stage canvas { z-index: 2; pointer-events: none; }
 .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
 .toolbar-spacer { flex: 1; }
 .compact { padding: 8px 11px; font-size: 13px; }

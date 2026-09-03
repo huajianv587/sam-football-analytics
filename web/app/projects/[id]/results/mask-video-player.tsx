@@ -130,7 +130,10 @@ export function MaskVideoPlayer({
     }
   }
 
-  function click(event: React.MouseEvent<HTMLCanvasElement>) {
+  function click(event: React.MouseEvent<HTMLDivElement>) {
+    // Let native video controls own their lower control bar. Track selection is
+    // only attempted for clicks that land on the video image itself.
+    if (event.target !== videoRef.current) return;
     const rect = event.currentTarget.getBoundingClientRect();
     const x = ((event.clientX - rect.left) / rect.width) * dimensions.width;
     const y = ((event.clientY - rect.top) / rect.height) * dimensions.height;
@@ -139,9 +142,9 @@ export function MaskVideoPlayer({
   }
 
   return (
-    <div className="video-stage">
+    <div className="video-stage" onClick={click}>
       <video ref={videoRef} src={videoUrl} crossOrigin="anonymous" controls playsInline onLoadedMetadata={readVideoSize} onTimeUpdate={syncTime} onSeeked={syncTime} />
-      <canvas ref={canvasRef} width={dimensions.width} height={dimensions.height} onClick={click} />
+      <canvas ref={canvasRef} width={dimensions.width} height={dimensions.height} />
     </div>
   );
 }
