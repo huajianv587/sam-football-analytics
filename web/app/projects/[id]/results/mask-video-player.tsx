@@ -143,7 +143,7 @@ export function MaskVideoPlayer({
   }
 
   function click(event: React.PointerEvent<HTMLDivElement>) {
-    const rect = event.currentTarget.getBoundingClientRect();
+    const rect = event.currentTarget.parentElement?.getBoundingClientRect() ?? event.currentTarget.getBoundingClientRect();
     // Native controls occupy the lower edge of the video. Ignore only that
     // strip; the rest of the stage remains a reliable track hit target even
     // when the browser reports the parent/canvas as the event target.
@@ -159,9 +159,10 @@ export function MaskVideoPlayer({
   }
 
   return (
-    <div className="video-stage" onPointerDown={click}>
-      <video ref={videoRef} src={videoUrl} crossOrigin="anonymous" controls playsInline onLoadedMetadata={readVideoSize} onTimeUpdate={syncTime} onSeeked={syncTime} />
+    <div className="video-stage">
+      <video ref={videoRef} src={videoUrl} crossOrigin="anonymous" controls playsInline onLoadedMetadata={readVideoSize} onLoadedData={syncTime} onTimeUpdate={syncTime} onSeeked={syncTime} onEnded={syncTime} />
       <canvas ref={canvasRef} width={dimensions.width} height={dimensions.height} />
+      <div className="video-hit-area" onPointerDown={click} aria-hidden="true" />
     </div>
   );
 }
