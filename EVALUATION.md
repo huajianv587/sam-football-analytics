@@ -25,6 +25,11 @@ playback, pause and seek rather than being recomputed after a seek.
 | Indexed seek round trip | Exact | Frame 0 response before and after a seek to frame 210 matched byte-for-byte |
 | Selected SAM refinement | 31.00 frames | Track 1, centre frame 15, radius 15, state `ready` |
 | Mac failover smoke | 15.00 / 15.00 frames | A forced A40 connection failure completed using the local MPS worker |
+| Browser upload and precompute | Passed | The visible `VIDEO FILE` control submitted the 30.00-second source and reached `READY` |
+| Browser selected-track refinement | Passed | Clicking Track 1 changed `SAM REFINING` to `SAM READY` |
+| Browser playback controls | Passed | `PLAY`, `PAUSE`, `-5s`, `+5s`, `RESTART`, and native controls enabled only after indexing |
+| Native seek round trip | Passed | Dragged 1.27 s -> 17.94 s -> 1.27 s while preserving Track 1 selection and visible Tracks |
+| Failure retry | Passed | Both workers disabled -> `FAILED` -> `RETRY ANALYSIS`; A40 restored -> same file reached `READY` |
 
 The A40 route is selected whenever it is healthy. Mac MPS is a deliberate
 fallback for lightweight processing only; its UI and API response identify the
