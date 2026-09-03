@@ -208,6 +208,7 @@ button { cursor: pointer; }
 .metric-row span { color: var(--muted); }
 
 .live-shell { padding: 34px 0 72px; }
+.live-shell .offline-heading h1 { max-width: none; font-size: clamp(28px, 2.7vw, 42px); line-height: 1.05; letter-spacing: 0; white-space: nowrap; }
 .live-grid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; align-items: start; }
 .live-main { padding: 14px; }
 .live-stage { position: relative; overflow: hidden; aspect-ratio: 16 / 9; border-radius: 13px; background: #020604; }
@@ -251,6 +252,7 @@ button { cursor: pointer; }
   .workspace-side { position: static; }
   .live-side { position: static; }
   .offline-heading { align-items: start; flex-direction: column; }
+  .live-shell .offline-heading h1 { white-space: normal; }
   .source-modes { max-width: 100%; min-width: 0; flex-wrap: wrap; justify-content: flex-start; }
 }
 @media (max-width: 620px) {
