@@ -84,14 +84,27 @@ export function OfflineAnalyzer() {
 
   async function chooseFile(nextFile: File | undefined) {
     if (!nextFile) return;
-    if (nextFile.type !== "video/mp4") return setMessage("The offline workflow accepts MP4 video only.");
-    if (nextFile.size > MAX_VIDEO_BYTES) return setMessage("Video size must be 50 MB or less.");
+    const extension = nextFile.name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
+    const knownVideoExtension = ["mp4", "mov", "m4v", "webm", "mkv", "avi"].includes(extension ?? "");
+    // Some camera exports (including extensionless `videoplayback` files) have an
+    // empty MIME type. Let the user pick them, then validate by MIME/extension.
+    if (!nextFile.type.startsWith("video/") && !knownVideoExtension && nextFile.type !== "application/octet-stream") {
+      return setMessage(`“${nextFile.name}” is not recognized as a video file.`);
+    }
+    if (nextFile.size > MAX_VIDEO_BYTES) return setMessage(`“${nextFile.name}” is ${(nextFile.size / 1024 / 1024).toFixed(1)} MB. The upload limit is 50 MB; trim or export a shorter clip first.`);
     const url = URL.createObjectURL(nextFile);
-    const duration = await readDuration(url);
+    let duration: number | null = null;
+    try {
+      duration = await readDuration(url);
+    } catch {
+      URL.revokeObjectURL(url);
+      return setMessage(`“${nextFile.name}” cannot be previewed by this browser. Export it as H.264 MP4 and try again.`);
+    }
     if (duration > 60) {
       URL.revokeObjectURL(url);
-      return setMessage("The offline workflow supports clips up to 60 seconds.");
+      return setMessage(`This clip is ${Math.ceil(duration)} seconds. The offline workflow supports clips up to 60 seconds.`);
     }
+    if (videoUrl) URL.revokeObjectURL(videoUrl);
     setFile(nextFile);
     setVideoUrl(url);
     setJobId("");
@@ -162,7 +175,7 @@ export function OfflineAnalyzer() {
         <section className="panel simple-upload">
           <div className="upload-layout">
             <div className="upload-copy"><span className="upload-icon"><CloudUpload size={24} /></span><div><h2>Select match footage</h2><p>H.264 MP4 · up to 60 seconds · 50 MB maximum</p></div></div>
-            <div className="upload-action"><label className="button button-primary">SELECT VIDEO<input type="file" accept="video/mp4,.mp4" onChange={(event) => chooseFile(event.target.files?.[0])} /></label><span>Continuous shot recommended</span></div>
+            <div className="upload-action"><label className="button button-primary">SELECT VIDEO<input type="file" onChange={(event) => { void chooseFile(event.target.files?.[0]); event.currentTarget.value = ""; }} /></label><span>H.264 MP4 · up to 60 seconds · 50 MB</span></div>
           </div>
           {message && <p className="form-error">{message}</p>}
         </section>

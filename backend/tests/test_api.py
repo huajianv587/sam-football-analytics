@@ -126,6 +126,41 @@ def test_direct_upload_defaults_to_generic_fixture_without_login(monkeypatch) ->
     assert captured["request"].analysis_mode == "auto_all"
 
 
+def test_direct_upload_accepts_extensionless_camera_video(monkeypatch) -> None:
+    import app.main as api
+
+    project_id = "00000000-0000-4000-8000-000000000098"
+
+    class FakeGateway:
+        def create_project(self, values):
+            return {"id": project_id}
+
+        def upload_video(self, path, content):
+            assert path.endswith("/source.mp4")
+
+        def update_project(self, requested_project, values):
+            pass
+
+    class FakeRunner:
+        gateway = FakeGateway()
+
+        async def submit(self, request, owner_id):
+            return {
+                "project_id": project_id,
+                "state": "queued",
+                "stage": "queued",
+                "progress": 2,
+                "track_count": 0,
+            }
+
+    monkeypatch.setattr(api, "_runner", FakeRunner())
+    response = TestClient(app).post(
+        "/v1/offline/jobs",
+        files={"video": ("videoplayback", b"camera video payload", "application/octet-stream")},
+    )
+    assert response.status_code == 202
+
+
 def test_selected_track_can_submit_and_poll_large_refinement(monkeypatch) -> None:
     import app.main as api
 

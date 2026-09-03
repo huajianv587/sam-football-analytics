@@ -96,8 +96,13 @@ async def create_offline_job(
     team_b: str = Form("Team B"),
     owner_id: str = Depends(current_user_id),
 ) -> JobResponse:
-    if video.content_type != "video/mp4":
-        raise HTTPException(status_code=415, detail="Only MP4 video is supported")
+    extension = (video.filename or "").lower().rsplit(".", 1)[-1] if "." in (video.filename or "") else ""
+    accepted_extensions = {"mp4", "mov", "m4v", "webm", "mkv", "avi"}
+    # Browser and camera uploads can report application/octet-stream (or no MIME
+    # type) even when the payload is a valid video. FFmpeg performs the final
+    # codec/container check during normalization.
+    if not ((video.content_type or "").startswith("video/") or extension in accepted_extensions or video.content_type in {"application/octet-stream", "binary/octet-stream"}):
+        raise HTTPException(status_code=415, detail="Upload a video file (MP4, MOV, WebM, MKV or AVI)")
     content = await video.read(50 * 1024 * 1024 + 1)
     if not content:
         raise HTTPException(status_code=422, detail="Video is empty")
