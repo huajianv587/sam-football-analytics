@@ -54,7 +54,8 @@ export function OfflineAnalyzer() {
           setProgress(job.progress);
           setTrackCount(job.track_count);
           setMessage(job.message ?? "");
-        });
+        })
+        .catch(() => setMessage("Analysis service is offline. You can still preview the video, then start FastAPI to analyze it."));
     }, 0);
     return () => window.clearTimeout(timer);
   }, [apiUrl]);
@@ -62,14 +63,19 @@ export function OfflineAnalyzer() {
   useEffect(() => {
     if (!jobId || (state !== "queued" && state !== "running")) return;
     async function refreshJob() {
-      const response = await fetch(`${apiUrl}/v1/offline/jobs/${jobId}`);
-      if (!response.ok) return;
-      const job = await response.json();
-      setState(job.state);
-      setStage(job.stage);
-      setProgress(job.progress);
-      setTrackCount(job.track_count);
-      setMessage(job.message ?? "");
+      try {
+        const response = await fetch(`${apiUrl}/v1/offline/jobs/${jobId}`);
+        if (!response.ok) return;
+        const job = await response.json();
+        setState(job.state);
+        setStage(job.stage);
+        setProgress(job.progress);
+        setTrackCount(job.track_count);
+        setMessage(job.message ?? "");
+      } catch {
+        setState("failed");
+        setMessage("Analysis service is offline. Start FastAPI, then choose the video again.");
+      }
     }
     void refreshJob();
     const timer = window.setInterval(refreshJob, 4000);

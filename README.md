@@ -69,7 +69,7 @@ video reports pixel speed instead of inventing km/h.
 ```mermaid
 flowchart LR
     C[Video file or browser camera] -->|one JPEG in flight| W[Binary WebSocket]
-    W --> Y[YOLO11s Segment: all person Masks]
+    W --> Y[YOLO11s Segment: configured object Masks]
     Y --> B[ByteTrack: persistent IDs]
     B -->|all lightweight polygons| U[Next.js Canvas]
     U -->|selected Track ID| SR[SAM 2.1 Base+ image refinement]
@@ -93,6 +93,26 @@ flowchart LR
     X -->|selected Track only| Z[Optional SAM 2.1 Large refinement]
     X --> Q[Speed, team, OCR, occlusion, foreground video]
     Q -->|verified non-empty results| A
+```
+
+### Runtime flow
+
+```mermaid
+sequenceDiagram
+    participant B as Browser
+    participant L as Live WebSocket
+    participant D as Lightweight Segmenter
+    participant T as ByteTrack
+    participant S as SAM Base+
+    B->>L: Send one JPEG frame
+    L->>D: Detect configured classes
+    D->>T: Boxes, masks and confidence
+    T-->>L: Track IDs and trails
+    L-->>B: All lightweight masks
+    B->>L: Select one Track ID
+    L->>S: Refine selected box
+    S-->>L: High-quality polygon
+    L-->>B: Selected SAM mask + telemetry
 ```
 
 ### Layer responsibilities
